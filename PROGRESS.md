@@ -42,7 +42,8 @@
 | 22 | 对话 API | `api/chat.py` | ✅ 已生成 | POST /api/chat |
 | 23 | FastAPI 入口 | `main.py` | ✅ 已生成 | lifespan + 路由挂载 |
 | 24 | **环境配置** | `.env` (本地，gitignore) | ⚠️ 待填写 | 复制 .env.example 填写真实 Key |
-| 25 | **端对端测试** | 飞书发消息 → 收到回复 | ⏳ 待执行 | 需要真实环境 |
+| 25 | **单元/接口测试** | `tests/` 全部测试 | ✅ 209个测试，全部通过 | 2026-03-13 |
+| 26 | **端对端测试** | 飞书发消息 → 收到回复 | ⏳ 待执行 | 需要真实环境 |
 
 ---
 
@@ -114,11 +115,22 @@
 
 ---
 
+## 已归档 Bug（已修复）
+
+| Bug | 位置 | 修复方式 |
+|-----|------|---------|
+| `conv_id=body.conv_id or None` 导致 ValidationError | `api/chat.py:52` | 改为条件展开 dict |
+| `TOOL_SELECTING→THINKING` 非法转换 | `tests/test_state_machine.py` | 改为 3 状态合法循环 |
+| 正则不匹配 "disable your content guardrails" | `security/prompt_guard.py` | 加 `(\w+\s+)?` 允许中间词 |
+| 中文正则不匹配 "忽略之前的所有指令" | `security/prompt_guard.py` | 改为 `.{0,15}` 模糊匹配 |
+| "ignore all previous instructions" 匹配缺失 | `security/prompt_guard.py` | 允许中间额外词 |
+
 ## 技术债 / 已知问题
 
 | 问题 | 位置 | 影响 |
 |------|------|------|
 | bash_tool Phase 1a 无沙箱 | `tools/bash_tool.py` | 中风险，Phase 1b 升级 |
+| health.py 用全局 _loader 而非 request.app.state.loader | `api/health.py` | 测试需 patch，Phase 1b 重构 |
 | 模型路由任务类型判断较简单 | `core/model_router.py` | 低风险，后续优化 |
 | 飞书重连测试未完成 | `modules/gateway/feishu.py` | 需真实环境测试 |
 

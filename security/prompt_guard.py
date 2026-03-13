@@ -34,7 +34,7 @@ _PATTERNS: list[InjectionPattern] = [
     InjectionPattern(
         "role_override_ignore",
         re.compile(
-            r"ignore\s+(previous|all|above|prior)\s+(instructions?|rules?|prompts?|guidelines?)",
+            r"ignore\s+(previous|all|above|prior)(\s+\w+)?\s*(instructions?|rules?|prompts?|guidelines?)",
             re.IGNORECASE,
         ),
         "high",
@@ -91,7 +91,7 @@ _PATTERNS: list[InjectionPattern] = [
     InjectionPattern(
         "safety_override",
         re.compile(
-            r"(bypass|override|disable|turn\s+off)\s+(your\s+)?(safety|content\s+filter|restrictions?|guardrails?|limits?)",
+            r"(bypass|override|disable|turn\s+off)\s+(your\s+)?(\w+\s+)?(safety|content\s+filter|restrictions?|guardrails?|limits?)",
             re.IGNORECASE,
         ),
         "high",
@@ -100,7 +100,7 @@ _PATTERNS: list[InjectionPattern] = [
     InjectionPattern(
         "cn_role_override",
         re.compile(
-            r"(忽略|无视|取消)\s*(之前|所有|上面的|前面的|你的)?\s*(指令|规则|限制|设定|提示)",
+            r"(忽略|无视|取消).{0,15}(指令|规则|限制|设定|提示)",
             re.IGNORECASE,
         ),
         "high",

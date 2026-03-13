@@ -120,22 +120,25 @@ class TestStateMachineRun:
         async def looping_handler(ctx: AgentContext) -> None:
             nonlocal call_count
             call_count += 1
-            # Never transitions out - simulates a buggy handler
-            # But we need to change state to avoid "state did not change" abort
-            # Switch between THINKING and TOOL_SELECTING
+            # Loop through valid 3-state cycle:
+            # THINKING -> TOOL_SELECTING -> EXECUTING -> THINKING (all valid)
             if ctx.state == AgentState.THINKING:
                 sm.transition(ctx, AgentState.TOOL_SELECTING)
+            elif ctx.state == AgentState.TOOL_SELECTING:
+                sm.transition(ctx, AgentState.EXECUTING)
             else:
+                # EXECUTING -> THINKING (valid per VALID_TRANSITIONS)
                 sm.transition(ctx, AgentState.THINKING)
 
         sm.register(AgentState.THINKING, looping_handler)
         sm.register(AgentState.TOOL_SELECTING, looping_handler)
+        sm.register(AgentState.EXECUTING, looping_handler)
 
         ctx = make_context()
         sm.transition(ctx, AgentState.THINKING)
         result = await sm.run(ctx)
 
-        # Should have stopped; call_count <= max_iterations
+        # Should have stopped at max_iterations; error_message set
         assert call_count <= sm.max_iterations
         assert result.error_message != ""
 

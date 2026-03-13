@@ -49,7 +49,7 @@ async def chat(request: Request, body: ChatRequest) -> dict[str, Any]:
     loader = _get_loader(request)
 
     msg = UserMessage(
-        conv_id=body.conv_id or None,  # type: ignore[arg-type]
+        **({"conv_id": body.conv_id} if body.conv_id else {}),
         user_id=body.user_id,
         message_type=MessageType.TEXT,
         source=MessageSource.API,
