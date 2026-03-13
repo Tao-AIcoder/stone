@@ -12,6 +12,7 @@ import re
 from typing import NamedTuple
 
 from models.errors import PromptInjectionError
+from modules.interfaces.prompt_guard import PromptGuardInterface
 
 logger = logging.getLogger(__name__)
 
@@ -116,7 +117,7 @@ _PATTERNS: list[InjectionPattern] = [
 ]
 
 
-class PromptGuard:
+class PromptGuard(PromptGuardInterface):
     """
     Scans content for prompt injection patterns and wraps untrusted content
     with boundary markers to prevent instruction leakage.

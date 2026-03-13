@@ -15,6 +15,7 @@ import httpx
 
 from config import settings
 from models.errors import ModelError, ModelQuotaError, ModelTimeoutError
+from modules.interfaces.model_router import ModelRouterInterface
 
 logger = logging.getLogger(__name__)
 
@@ -72,7 +73,7 @@ def _select_model(
     return MODEL_LOCAL
 
 
-class ModelRouter:
+class ModelRouter(ModelRouterInterface):
     """
     Thin async router that wraps three LLM backends:
     - Ollama  (local, via httpx)

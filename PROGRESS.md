@@ -5,7 +5,7 @@
 
 ---
 
-## 当前阶段：Phase 1a —— 最小可对话链路
+## 当前阶段：Phase 1a —— 最小可对话链路（乐高架构已完成）
 
 ### 验收标准
 - [ ] 在飞书上能对话
@@ -32,18 +32,51 @@
 | 12 | search_tool | `tools/search_tool.py` | ✅ 已生成 | Tavily API |
 | 13 | 短期记忆 | `modules/memory/inmemory_store.py` | ✅ 已生成 | asyncio.Lock 线程安全 |
 | 14 | 长期存储 | `modules/memory/sqlite_store.py` | ✅ 已生成 | 6张表 + CRUD |
-| 15 | 白名单认证 | `security/auth.py` | ✅ 已生成 | Phase 1a 版（无PIN）|
+| 15 | 白名单认证 | `security/auth.py` | ✅ 已生成 | bcrypt PIN + TOTP |
 | 16 | 审计日志 | `security/audit.py` | ✅ 已生成 | 写 SQLite，敏感字段脱敏 |
 | 17 | Prompt 防护 | `security/prompt_guard.py` | ✅ 已生成 | 10种注入模式检测 |
 | 18 | 能力注册中心 | `registry/skill_registry.py` | ✅ 已生成 | Phase 1a 3工具注册 |
 | 19 | 飞书网关 | `modules/gateway/feishu.py` | ✅ 已生成 | WebSocket，断线重连 |
-| 20 | 模块加载器 | `modules/loader.py` | ✅ 已生成 | 14步严格启动顺序 |
+| 20 | 模块加载器 | `modules/loader.py` | ✅ 重构完成 | 读 stone.config.json driver 字段动态加载 |
 | 21 | 健康检查 API | `api/health.py` | ✅ 已生成 | GET /health |
 | 22 | 对话 API | `api/chat.py` | ✅ 已生成 | POST /api/chat |
 | 23 | FastAPI 入口 | `main.py` | ✅ 已生成 | lifespan + 路由挂载 |
 | 24 | **环境配置** | `.env` (本地，gitignore) | ⚠️ 待填写 | 复制 .env.example 填写真实 Key |
-| 25 | **单元/接口测试** | `tests/` 全部测试 | ✅ 209个测试，全部通过 | 2026-03-13 |
+| 25 | **单元/接口测试** | `tests/` 全部测试 | ✅ 318个测试，全部通过 | 2026-03-13 |
 | 26 | **端对端测试** | 飞书发消息 → 收到回复 | ⏳ 待执行 | 需要真实环境 |
+
+---
+
+## 乐高化架构（已完成）
+
+### 核心文件
+| 文件 | 作用 |
+|------|------|
+| `modules/interfaces/` | 8个 ABC 接口定义，覆盖所有可替换模块 |
+| `modules/registry.py` | `DRIVERS` 字典 + `load_driver(component, driver)` 动态加载 |
+| `modules/loader.py` | 读取 `stone.config.json` driver 字段，通过 registry 加载模块 |
+| `modules/sandbox/noop.py` | Phase 1 无 Docker 沙箱（subprocess，非隔离） |
+
+### 接口列表
+| 接口 | 文件 | 当前实现 | 替换方式 |
+|------|------|----------|----------|
+| `GatewayInterface` | `modules/interfaces/gateway.py` | `FeishuGateway` | 修改 `modules.gateway.driver` |
+| `ShortTermMemoryInterface` | `modules/interfaces/memory.py` | `InMemoryStore` | 修改 `modules.memory.short_term.driver` |
+| `LongTermMemoryInterface` | `modules/interfaces/memory.py` | `SQLiteStore` | 修改 `modules.memory.long_term.driver` |
+| `ModelRouterInterface` | `modules/interfaces/model_router.py` | `ModelRouter` | 修改 `modules.model_router.driver` |
+| `AuthInterface` | `modules/interfaces/auth.py` | `AuthManager` | 修改 `modules.auth.driver` |
+| `AuditInterface` | `modules/interfaces/audit.py` | `AuditLogger` | 修改 `modules.audit.driver` |
+| `SandboxInterface` | `modules/interfaces/sandbox.py` | `NoopSandbox`/`DockerSandbox` | 修改 `modules.sandbox.driver` |
+| `PromptGuardInterface` | `modules/interfaces/prompt_guard.py` | `PromptGuard` | 修改 `modules.prompt_guard.driver` |
+
+### 独立模块测试
+| 测试文件 | 覆盖范围 |
+|----------|----------|
+| `tests/test_module_registry.py` | DRIVERS 完整性、load_driver、接口合规性 |
+| `tests/test_module_memory_inmemory.py` | InMemoryStore CRUD、LRU、并发安全 |
+| `tests/test_module_auth.py` | AuthManager 白名单、PIN、TOTP、限流 |
+| `tests/test_module_sandbox_noop.py` | NoopSandbox execute/run_bash/timeout |
+| `tests/test_module_prompt_guard.py` | PromptGuard scan/scan_safe/wrap_untrusted |
 
 ---
 
@@ -51,17 +84,17 @@
 
 | # | 任务 | 文件 | 状态 | 备注 |
 |---|------|------|------|------|
-| 1 | Docker 沙箱 | `modules/sandbox/docker.py`, `security/sandbox.py` | 📋 骨架已生成 | 实现容器执行、资源限制 |
+| 1 | Docker 沙箱 | `modules/sandbox/docker.py` | 📋 骨架已生成 | 实现容器执行、资源限制 |
 | 2 | bash_tool 接入沙箱 | `tools/bash_tool.py` | 📋 待升级 | 危险命令走Docker |
 | 3 | code_tool | `tools/code_tool.py` | 📋 骨架已生成 | 沙箱执行 Python/JS |
 | 4 | git_tool | `tools/git_tool.py` | 📋 骨架已生成 | commit/push 需确认 |
 | 5 | note_tool | `tools/note_tool.py` | 📋 骨架已生成 | Obsidian REST API |
 | 6 | http_tool | `tools/http_tool.py` | 📋 骨架已生成 | 外部 HTTP 调用 |
 | 7 | 干跑模式 | `core/dry_run.py` | ✅ 已生成 | 待集成测试 |
-| 8 | PIN + TOTP 认证 | `security/auth.py` | 📋 待升级 | bcrypt + pyotp |
+| 8 | PIN + TOTP 认证 | `security/auth.py` | ✅ 已完成 | bcrypt + pyotp（1a已含） |
 | 9 | 管理员 API | `api/admin.py` | ✅ 已生成 | 待认证集成 |
 | 10 | 定时任务引擎 | `core/scheduler.py` | ✅ 已生成 | 待集成测试 |
-| 11 | 安全测试覆盖 | `tests/` | 📋 骨架已生成 | 覆盖率 > 80% |
+| 11 | 安全测试覆盖 | `tests/` | 📋 继续扩展 | 当前 318 测试 |
 
 ---
 

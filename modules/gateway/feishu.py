@@ -17,6 +17,7 @@ from typing import TYPE_CHECKING, Any
 from config import settings
 from models.errors import AuthError, PromptInjectionError, StoneError
 from models.message import BotResponse, MessageSource, MessageType, UserMessage
+from modules.interfaces.gateway import GatewayInterface
 
 if TYPE_CHECKING:
     from core.agent import Agent
@@ -39,7 +40,7 @@ RECONNECT_MAX_FAILURES = 5
 LONG_TASK_THRESHOLD = 2.0  # seconds
 
 
-class FeishuGateway:
+class FeishuGateway(GatewayInterface):
     """
     Feishu WebSocket long-connection gateway.
 

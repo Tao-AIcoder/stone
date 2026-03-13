@@ -20,6 +20,7 @@ import pyotp
 
 from config import settings
 from models.errors import AuthError
+from modules.interfaces.auth import AuthInterface
 
 logger = logging.getLogger(__name__)
 
@@ -30,7 +31,7 @@ RATE_LIMIT_WINDOW = 60.0    # seconds
 RATE_LIMIT_MAX = 60         # requests per window (auth checks)
 
 
-class AuthManager:
+class AuthManager(AuthInterface):
     """
     Manages user authentication for STONE.
     All state is in-memory; meant to be a singleton via ModuleLoader.

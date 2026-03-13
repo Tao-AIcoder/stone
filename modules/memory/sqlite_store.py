@@ -20,6 +20,7 @@ from config import settings
 from models.audit import AuditLog, SecurityLog
 from models.conversation import Message, MessageRole
 from models.memory import Memory, MemoryCategory
+from modules.interfaces.memory import LongTermMemoryInterface
 
 logger = logging.getLogger(__name__)
 
@@ -122,7 +123,7 @@ def _now() -> str:
     return datetime.utcnow().isoformat()
 
 
-class SQLiteStore:
+class SQLiteStore(LongTermMemoryInterface):
     """Async SQLite store for all STONE persistent data."""
 
     def __init__(self, db_path: Path | None = None) -> None:

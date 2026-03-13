@@ -11,6 +11,7 @@ import logging
 from typing import TYPE_CHECKING, Any
 
 from models.audit import AuditLevel, AuditLog, AuditResult, SecurityEventType, SecurityLog
+from modules.interfaces.audit import AuditInterface
 
 if TYPE_CHECKING:
     from modules.memory.sqlite_store import SQLiteStore
@@ -34,7 +35,7 @@ def _redact(detail: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-class AuditLogger:
+class AuditLogger(AuditInterface):
     """
     Writes audit and security events to SQLite.
     Fails gracefully (logs a warning) if storage is unavailable.
