@@ -1,0 +1,34 @@
+{
+  "stone": {"version": "1.0.0", "name": "默行者"},
+  "agent": {
+    "persona": "stone/core/persona.md",
+    "dry_run": true,
+    "context_window": 20
+  },
+  "modules": {
+    "gateway": {"driver": "feishu", "fallback": "telegram"},
+    "model_router": {
+      "driver": "direct",
+      "default_model": "qwen2.5:14b",
+      "privacy_mode": "balanced"
+    },
+    "models": {
+      "cloud": [
+        {"id": "glm-4-plus", "driver": "zhipuai", "for": ["chinese", "chat", "analysis"]},
+        {"id": "qwen-coder-plus", "driver": "dashscope", "for": ["code"]}
+      ],
+      "local": [
+        {"id": "qwen2.5:14b", "driver": "ollama", "base_url": "http://localhost:11434", "for": ["general", "private", "chinese"]}
+      ]
+    },
+    "memory": {
+      "short_term": {"driver": "inmemory"},
+      "long_term": {"driver": "sqlite"}
+    },
+    "sandbox": {"driver": "docker"},
+    "scheduler": {"driver": "apscheduler"}
+  },
+  "skills": {
+    "qimen": {"enabled": false}
+  }
+}
