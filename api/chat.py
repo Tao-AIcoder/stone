@@ -8,7 +8,7 @@ import logging
 from typing import Any
 
 from fastapi import APIRouter, HTTPException, Request
-from pydantic import BaseModel
+from pydantic import BaseModel, field_validator
 
 from config import DEFAULT_USER_ID
 from models.errors import StoneError
@@ -27,6 +27,13 @@ class ChatRequest(BaseModel):
     task_type: str = "chat"
     privacy_sensitive: bool = False
 
+    @field_validator("content")
+    @classmethod
+    def content_not_empty(cls, v: str) -> str:
+        if not v.strip():
+            raise ValueError("content must not be empty")
+        return v
+
 
 class ConfirmRequest(BaseModel):
     action: str  # "confirm" | "cancel"
@@ -40,6 +47,9 @@ async def chat(request: Request, body: ChatRequest) -> dict[str, Any]:
     """
     Submit a message to the STONE agent and receive a response.
 
+    Requires the user_id to be on the admin whitelist.
+    Content is scanned for prompt injection before processing.
+
     For dry-run operations, the response will include:
     - requires_confirmation: true
     - confirmation_token: <conv_id>
@@ -47,6 +57,21 @@ async def chat(request: Request, body: ChatRequest) -> dict[str, Any]:
     Use POST /api/chat/{conv_id}/confirm to confirm or cancel.
     """
     loader = _get_loader(request)
+
+    # Auth: whitelist check
+    if not loader.auth.verify_user(body.user_id):
+        raise HTTPException(status_code=403, detail="User not authorized")
+
+    # Rate limit
+    if not loader.auth.check_rate_limit(body.user_id):
+        raise HTTPException(status_code=429, detail="Rate limit exceeded")
+
+    # Prompt injection guard
+    from models.errors import PromptInjectionError
+    try:
+        loader.prompt_guard.scan(body.content)
+    except PromptInjectionError as exc:
+        raise HTTPException(status_code=400, detail={"error": "PROMPT_INJECTION", "message": exc.message})
 
     msg = UserMessage(
         **({"conv_id": body.conv_id} if body.conv_id else {}),

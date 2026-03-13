@@ -57,11 +57,11 @@ def client(loader: MagicMock) -> TestClient:
 
 class TestChatPost:
     def test_returns_200_on_normal_message(self, client: TestClient) -> None:
-        resp = client.post("/api/chat", json={"content": "你好"})
+        resp = client.post("/api/chat", json={"content": "你好", "user_id": "open_id_admin"})
         assert resp.status_code == 200
 
     def test_response_has_required_fields(self, client: TestClient) -> None:
-        resp = client.post("/api/chat", json={"content": "你好"})
+        resp = client.post("/api/chat", json={"content": "你好", "user_id": "open_id_admin"})
         data = resp.json()
         assert "response_id" in data
         assert "conv_id" in data
@@ -72,50 +72,50 @@ class TestChatPost:
         assert "timestamp" in data
 
     def test_content_is_string(self, client: TestClient) -> None:
-        resp = client.post("/api/chat", json={"content": "测试内容"})
+        resp = client.post("/api/chat", json={"content": "测试内容", "user_id": "open_id_admin"})
         data = resp.json()
         assert isinstance(data["content"], str)
 
     def test_is_error_false_on_success(self, client: TestClient) -> None:
-        resp = client.post("/api/chat", json={"content": "你好"})
+        resp = client.post("/api/chat", json={"content": "你好", "user_id": "open_id_admin"})
         assert resp.json()["is_error"] is False
 
     def test_tools_used_is_list(self, client: TestClient) -> None:
-        resp = client.post("/api/chat", json={"content": "你好"})
+        resp = client.post("/api/chat", json={"content": "你好", "user_id": "open_id_admin"})
         assert isinstance(resp.json()["tools_used"], list)
 
-    def test_custom_user_id_accepted(self, client: TestClient) -> None:
+    def test_custom_user_id_not_whitelisted_returns_403(self, client: TestClient) -> None:
         resp = client.post("/api/chat", json={"content": "你好", "user_id": "user_42"})
-        assert resp.status_code == 200
+        assert resp.status_code == 403
 
     def test_custom_conv_id_accepted(self, client: TestClient) -> None:
         conv_id = str(uuid.uuid4())
-        resp = client.post("/api/chat", json={"content": "继续", "conv_id": conv_id})
+        resp = client.post("/api/chat", json={"content": "继续", "conv_id": conv_id, "user_id": "open_id_admin"})
         assert resp.status_code == 200
 
     def test_task_type_code_accepted(self, client: TestClient) -> None:
-        resp = client.post("/api/chat", json={"content": "写个函数", "task_type": "code"})
+        resp = client.post("/api/chat", json={"content": "写个函数", "task_type": "code", "user_id": "open_id_admin"})
         assert resp.status_code == 200
 
     def test_privacy_sensitive_flag_accepted(self, client: TestClient) -> None:
-        resp = client.post("/api/chat", json={"content": "敏感信息", "privacy_sensitive": True})
+        resp = client.post("/api/chat", json={"content": "敏感信息", "privacy_sensitive": True, "user_id": "open_id_admin"})
         assert resp.status_code == 200
 
     def test_missing_content_returns_422(self, client: TestClient) -> None:
         resp = client.post("/api/chat", json={})
         assert resp.status_code == 422
 
-    def test_empty_content_accepted(self, client: TestClient) -> None:
-        """Empty string is technically valid (agent may respond anyway)."""
-        resp = client.post("/api/chat", json={"content": ""})
-        assert resp.status_code == 200
+    def test_empty_content_returns_422(self, client: TestClient) -> None:
+        """Empty string fails validation — agent requires non-empty input."""
+        resp = client.post("/api/chat", json={"content": "", "user_id": "open_id_admin"})
+        assert resp.status_code == 422
 
     def test_agent_process_is_called(self, client: TestClient, loader: MagicMock) -> None:
-        client.post("/api/chat", json={"content": "触发Agent"})
+        client.post("/api/chat", json={"content": "触发Agent", "user_id": "open_id_admin"})
         loader.agent.process.assert_called_once()
 
     def test_agent_called_with_correct_content(self, client: TestClient, loader: MagicMock) -> None:
-        client.post("/api/chat", json={"content": "测试消息内容"})
+        client.post("/api/chat", json={"content": "测试消息内容", "user_id": "open_id_admin"})
         call_args = loader.agent.process.call_args
         msg = call_args[0][0]  # first positional arg
         assert msg.content == "测试消息内容"
@@ -124,12 +124,12 @@ class TestChatPost:
         loader.agent.process = AsyncMock(
             side_effect=StoneError("测试错误", code="TEST_ERR")
         )
-        resp = client.post("/api/chat", json={"content": "触发错误"})
+        resp = client.post("/api/chat", json={"content": "触发错误", "user_id": "open_id_admin"})
         assert resp.status_code == 400
 
     def test_agent_unexpected_exception_returns_500(self, client: TestClient, loader: MagicMock) -> None:
         loader.agent.process = AsyncMock(side_effect=RuntimeError("crash"))
-        resp = client.post("/api/chat", json={"content": "崩溃"})
+        resp = client.post("/api/chat", json={"content": "崩溃", "user_id": "open_id_admin"})
         assert resp.status_code == 500
 
 
@@ -151,7 +151,7 @@ class TestChatDryRun:
         app = make_test_app(loader=loader)
         client = TestClient(app, raise_server_exceptions=False)
 
-        resp = client.post("/api/chat", json={"content": "删除 /tmp/test"})
+        resp = client.post("/api/chat", json={"content": "删除 /tmp/test", "user_id": "open_id_admin"})
         data = resp.json()
         assert data["requires_confirmation"] is True
         assert data["confirmation_token"] != ""
@@ -168,7 +168,7 @@ class TestChatDryRun:
         app = make_test_app(loader=loader)
         client = TestClient(app, raise_server_exceptions=False)
 
-        resp = client.post("/api/chat", json={"content": "危险操作"})
+        resp = client.post("/api/chat", json={"content": "危险操作", "user_id": "open_id_admin"})
         data = resp.json()
         assert data["confirmation_token"] == data["conv_id"]
 
