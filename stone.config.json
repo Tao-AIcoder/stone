@@ -6,15 +6,19 @@
     "context_window": 20
   },
   "modules": {
-    "gateway": {"driver": "feishu", "fallback": "telegram"},
+    "gateway": {
+      "driver": "feishu",
+      "_alternatives": "telegram, wechat (Phase 2)"
+    },
     "model_router": {
       "driver": "direct",
       "default_model": "qwen2.5:14b",
-      "privacy_mode": "balanced"
+      "privacy_mode": "balanced",
+      "_alternatives": "litellm, openrouter (future)"
     },
     "models": {
       "cloud": [
-        {"id": "glm-4-plus", "driver": "zhipuai", "for": ["chinese", "chat", "analysis"]},
+        {"id": "glm-4-plus",      "driver": "zhipuai",   "for": ["chinese", "chat", "analysis"]},
         {"id": "qwen-coder-plus", "driver": "dashscope", "for": ["code"]}
       ],
       "local": [
@@ -22,11 +26,35 @@
       ]
     },
     "memory": {
-      "short_term": {"driver": "inmemory"},
-      "long_term": {"driver": "sqlite"}
+      "short_term": {
+        "driver": "inmemory",
+        "_alternatives": "redis (Phase 2)"
+      },
+      "long_term": {
+        "driver": "sqlite",
+        "_alternatives": "postgres (future)"
+      }
     },
-    "sandbox": {"driver": "docker"},
-    "scheduler": {"driver": "apscheduler"}
+    "auth": {
+      "driver": "whitelist",
+      "_alternatives": "oauth2, ldap (future)"
+    },
+    "audit": {
+      "driver": "sqlite",
+      "_alternatives": "elk, loki (future)"
+    },
+    "sandbox": {
+      "driver": "noop",
+      "_note": "Phase 1: no isolation. Switch to docker after Phase 1b implementation"
+    },
+    "prompt_guard": {
+      "driver": "regex",
+      "_alternatives": "llama-guard, lakera (future)"
+    },
+    "scheduler": {
+      "driver": "apscheduler",
+      "_alternatives": "celery, rq (future)"
+    }
   },
   "skills": {
     "qimen": {"enabled": false}

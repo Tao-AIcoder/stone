@@ -15,6 +15,7 @@ from modules.interfaces.auth import AuthInterface
 from modules.interfaces.audit import AuditInterface
 from modules.interfaces.sandbox import SandboxInterface, SandboxResult
 from modules.interfaces.prompt_guard import PromptGuardInterface
+from modules.interfaces.scheduler import SchedulerInterface
 
 __all__ = [
     "GatewayInterface",
@@ -26,4 +27,5 @@ __all__ = [
     "SandboxInterface",
     "SandboxResult",
     "PromptGuardInterface",
+    "SchedulerInterface",
 ]

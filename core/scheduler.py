@@ -17,6 +17,7 @@ from apscheduler.schedulers.asyncio import AsyncIOScheduler  # type: ignore[impo
 from apscheduler.triggers.cron import CronTrigger  # type: ignore[import]
 
 from models.errors import StoneError
+from modules.interfaces.scheduler import SchedulerInterface
 
 if TYPE_CHECKING:
     from core.agent import Agent
@@ -47,7 +48,7 @@ class ScheduledTask:
         self.last_run: datetime | None = None
 
 
-class Scheduler:
+class Scheduler(SchedulerInterface):
     """
     Wraps APScheduler with STONE-specific task management and SQLite persistence.
     """
