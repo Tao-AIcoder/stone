@@ -47,12 +47,13 @@ _VALID_ACTIONS = ("GET", "POST", "PUT", "DELETE", "PATCH")
 
 
 def _is_private_ip(hostname: str) -> bool:
-    """Return True if hostname resolves to a private/loopback IP."""
+    """Return True if hostname resolves to a private/loopback IP.
+    Fail-safe: returns True (block) on DNS resolution failure to prevent SSRF."""
     try:
         ip = ipaddress.ip_address(socket.gethostbyname(hostname))
         return any(ip in net for net in _PRIVATE_RANGES)
     except Exception:
-        return False
+        return True  # fail-safe: block on DNS error
 
 
 def _strip_html(html: str) -> str:

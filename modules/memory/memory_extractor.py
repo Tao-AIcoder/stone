@@ -183,8 +183,14 @@ class MemoryExtractor:
     # ── Reinforcement ─────────────────────────────────────────────────────────
 
     def is_praise(self, text: str) -> bool:
-        """Return True if the text is a positive reinforcement signal."""
-        return text.strip() in _PRAISE_WORDS or any(w in text for w in _PRAISE_WORDS)
+        """Return True if the text is a positive reinforcement signal.
+        Single-char words only match exactly; multi-char words allow substring match
+        to avoid false positives (e.g. '不对' containing '对')."""
+        stripped = text.strip()
+        if stripped in _PRAISE_WORDS:
+            return True
+        # Only substring-match words with len >= 2 to avoid single-char ambiguity
+        return any(w in text for w in _PRAISE_WORDS if len(w) >= 2)
 
     async def reinforce_last_behavior(
         self,

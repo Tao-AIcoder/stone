@@ -28,32 +28,39 @@ import aiosqlite
 # ── Fixtures ──────────────────────────────────────────────────────────────────
 
 
+_SCHEMA_SQL = """
+    CREATE TABLE IF NOT EXISTS long_term_memory (
+        memory_id TEXT PRIMARY KEY,
+        user_id TEXT NOT NULL,
+        category TEXT NOT NULL,
+        content TEXT NOT NULL,
+        compressed_content TEXT DEFAULT '',
+        source TEXT DEFAULT '',
+        confidence REAL DEFAULT 1.0,
+        tags TEXT DEFAULT '[]',
+        strength REAL DEFAULT 1.0,
+        decay_rate REAL DEFAULT 0.05,
+        embedding TEXT DEFAULT '[]',
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL,
+        accessed_at TEXT NOT NULL,
+        access_count INTEGER DEFAULT 0,
+        active INTEGER DEFAULT 1
+    )
+"""
+
+
 @pytest.fixture
-async def tmp_db(tmp_path):
-    """Create a temporary SQLite database with required schema."""
+def tmp_db(tmp_path):
+    """Sync fixture: create a temp SQLite DB with memory schema."""
     db_path = str(tmp_path / "test_memory.db")
-    async with aiosqlite.connect(db_path) as db:
-        await db.execute("""
-            CREATE TABLE long_term_memory (
-                memory_id TEXT PRIMARY KEY,
-                user_id TEXT NOT NULL,
-                category TEXT NOT NULL,
-                content TEXT NOT NULL,
-                compressed_content TEXT DEFAULT '',
-                source TEXT DEFAULT '',
-                confidence REAL DEFAULT 1.0,
-                tags TEXT DEFAULT '[]',
-                strength REAL DEFAULT 1.0,
-                decay_rate REAL DEFAULT 0.05,
-                embedding TEXT DEFAULT '[]',
-                created_at TEXT NOT NULL,
-                updated_at TEXT NOT NULL,
-                accessed_at TEXT NOT NULL,
-                access_count INTEGER DEFAULT 0,
-                active INTEGER DEFAULT 1
-            )
-        """)
-        await db.commit()
+
+    async def _init():
+        async with aiosqlite.connect(db_path) as db:
+            await db.execute(_SCHEMA_SQL)
+            await db.commit()
+
+    asyncio.get_event_loop().run_until_complete(_init())
     return db_path
 
 

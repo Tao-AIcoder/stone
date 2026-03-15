@@ -64,6 +64,8 @@ class SkillRegistry:
         from tools.note_tool import NoteTool
         from tools.http_tool import HttpTool
         from tools.code_tool import CodeTool
+        from tools.office_tool import OfficeTool
+        from modules.note_backends.local_backend import LocalNoteBackend
 
         # bash_tool
         self.register(
@@ -158,12 +160,13 @@ class SkillRegistry:
             ),
         )
 
-        # Phase 1b stubs (registered but disabled)
+        # Phase 1b tools
         for stub_tool, category in [
             (GitTool(), SkillCategory.GIT),
-            (NoteTool(), SkillCategory.NOTE),
+            (NoteTool(local_backend=LocalNoteBackend()), SkillCategory.NOTE),
             (HttpTool(), SkillCategory.HTTP),
             (CodeTool(), SkillCategory.CODE),
+            (OfficeTool(), SkillCategory.FILE),
         ]:
             self.register(
                 stub_tool,
