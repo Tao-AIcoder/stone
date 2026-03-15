@@ -1,5 +1,5 @@
 {
-  "stone": {"version": "1.0.0", "name": "默行者"},
+  "stone": {"version": "0.1.0", "name": "默行者"},
   "agent": {
     "persona": "stone/core/persona.md",
     "dry_run": true,
@@ -56,6 +56,83 @@
       "_alternatives": "celery, rq (future)"
     }
   },
+
+  "long_term_memory": {
+    "enabled": true,
+    "auto_extract": true,
+    "forgetting_curve": {
+      "decay_rate": 0.05,
+      "compress_threshold": 0.5,
+      "forget_threshold": 0.1,
+      "reinforce_boost": 0.2,
+      "max_size_kb": 512
+    },
+    "retrieval": "semantic",
+    "_note": "retrieval: semantic (embedding) | keyword (fallback)"
+  },
+
+  "local_model": {
+    "embedding": {
+      "driver": "sentence_transformers",
+      "model": "BAAI/bge-small-zh-v1.5",
+      "_alternatives": "ollama (driver: ollama, model: nomic-embed-text)"
+    },
+    "extraction": {
+      "driver": "ollama",
+      "model": "qwen2.5:14b",
+      "_note": "always privacy_sensitive=True, routes to local Ollama"
+    }
+  },
+
+  "mcp_servers": {
+    "evernote": {
+      "enabled": false,
+      "command": "npx",
+      "args": ["@evernote/mcp-server"],
+      "env": {
+        "EVERNOTE_TOKEN": ""
+      },
+      "timeout": 30,
+      "_doc": "印象笔记国内版官方 MCP Server。需要先: npm install -g @evernote/mcp-server"
+    },
+    "baidu_netdisk": {
+      "enabled": false,
+      "command": "npx",
+      "args": ["@baidu/netdisk-mcp-server"],
+      "env": {
+        "BAIDU_APP_KEY": "",
+        "BAIDU_SECRET_KEY": "",
+        "BAIDU_ACCESS_TOKEN": ""
+      },
+      "timeout": 30,
+      "_doc": "百度网盘官方 MCP Server。需要先: npm install -g @baidu/netdisk-mcp-server"
+    }
+  },
+
+  "note_tool": {
+    "enabled": true,
+    "default_backend": "local",
+    "_backends": ["local", "evernote", "baidu_netdisk"]
+  },
+
+  "office_tool": {
+    "enabled": true,
+    "driver": "python-office",
+    "_alternatives": "libreoffice (future)"
+  },
+
+  "http_tool": {
+    "enabled": true,
+    "driver": "httpx",
+    "max_response_kb": 1024,
+    "default_timeout": 30,
+    "_alternatives": "aiohttp (future)"
+  },
+
+  "memory_tool": {
+    "enabled": true
+  },
+
   "skills": {
     "qimen": {"enabled": false}
   }

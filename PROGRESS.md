@@ -1,11 +1,11 @@
 # 默行者 (STONE) 开发进度
 
 > 本文件供 Claude Code 追踪项目进度，每次会话开始前应先读取此文件。
-> 最后更新：2026-03-14（第三次会话）
+> 最后更新：2026-03-15（第五次会话）
 
 ---
 
-## 当前阶段：Phase 1a 全部验收完成 ✅✅✅，测试 501 个全部通过，可进入 Phase 1b
+## 当前阶段：Phase 1b 代码已生成，待调测 🧪
 
 ### 验收标准
 - [x] 在飞书上能对话 ✅（2026-03-14 验证，GLM-4-plus + Ollama fallback）
@@ -90,31 +90,105 @@
 
 ---
 
-## Phase 1b 任务清单（第2周）
+## Phase 1b 任务清单（调整版，2026-03-15）
 
-| # | 任务 | 文件 | 状态 | 备注 |
-|---|------|------|------|------|
-| 1 | Docker 沙箱 | `modules/sandbox/docker.py` | 📋 骨架已生成 | 实现容器执行、资源限制 |
-| 2 | bash_tool 接入沙箱 | `tools/bash_tool.py` | 📋 待升级 | 危险命令走Docker |
-| 3 | code_tool | `tools/code_tool.py` | 📋 骨架已生成 | 沙箱执行 Python/JS |
-| 4 | git_tool | `tools/git_tool.py` | 📋 骨架已生成 | commit/push 需确认 |
-| 5 | note_tool | `tools/note_tool.py` | 📋 骨架已生成 | Obsidian REST API |
-| 6 | http_tool | `tools/http_tool.py` | 📋 骨架已生成 | 外部 HTTP 调用 |
-| 7 | 干跑模式 | `core/dry_run.py` | ✅ 已生成 | 待集成测试 |
-| 8 | PIN + TOTP 认证 | `security/auth.py` | ✅ 已完成 | bcrypt + pyotp（1a已含） |
-| 9 | 管理员 API | `api/admin.py` | ✅ 已生成 | 待认证集成 |
-| 10 | 定时任务引擎 | `core/scheduler.py` | ✅ 已生成 | 待集成测试 |
-| 11 | 安全测试覆盖 | `tests/` | 📋 继续扩展 | 当前 453 测试 |
+### 需求1：长期记忆 + 遗忘曲线
+
+| # | 任务 | 文件 | 状态 |
+|---|------|------|------|
+| 1 | 本地模型管理器 | `modules/memory/local_model_manager.py` | ✅ 已生成 |
+| 2 | Embedding 接口 | `modules/interfaces/embedding.py` | ✅ 已生成 |
+| 3 | sentence-transformers 后端 | `modules/memory/embedding_backends/sentence_transformers_backend.py` | ✅ 已生成 |
+| 4 | Ollama embedding 后端 | `modules/memory/embedding_backends/ollama_backend.py` | ✅ 已生成 |
+| 5 | 记忆存储（遗忘曲线）| `modules/memory/memory_store.py` | ✅ 已生成 |
+| 6 | 记忆提取器 | `modules/memory/memory_extractor.py` | ✅ 已生成 |
+| 7 | memory_tool | `tools/memory_tool.py` | ✅ 已生成 |
+| 8 | Agent 对话后提取钩子 | `core/agent.py`（修改）| ✅ 已生成 |
+| 9 | 每周用户画像定时任务 | `core/scheduler.py`（修改）| ✅ 已生成 |
+
+**遗忘曲线参数（可配置）：**
+- `decay_rate`: 衰减速率 λ（默认 0.05/天）
+- `compress_threshold`: 强度 < 0.5 → 压缩内容
+- `forget_threshold`: 强度 < 0.1 → 删除
+- `max_size_kb`: 记忆总大小上限（默认 512KB）
+- 被访问/强化时强度重置；用户夸奖强化上一条 AI 回复行为 +0.2
+
+### 需求2：MCP Server 接入（乐高化）
+
+| # | 任务 | 文件 | 状态 |
+|---|------|------|------|
+| 10 | MCP Server 接口 | `modules/interfaces/mcp_server.py` | ✅ 已生成 |
+| 11 | MCP Client | `modules/mcp/client.py` | ✅ 已生成 |
+| 12 | MCP 进程管理器 | `modules/mcp/process_manager.py` | ✅ 已生成 |
+
+**设计要点：** 标准 MCP Client，stdio/SSE 双传输；印象笔记国内版 + 百度网盘均用官方 MCP Server；新增 Server 只改配置，STONE 零改动。
+
+### 需求3：HTTP Tool
+
+| # | 任务 | 文件 | 状态 |
+|---|------|------|------|
+| 13 | HTTP Client 接口 | `modules/interfaces/http_client.py` | ✅ 已生成 |
+| 14 | HTTP Tool 完整实现 | `tools/http_tool.py`（重写）| ✅ 已生成 |
+
+### 需求4：Note Tool（本地 + 云端）
+
+| # | 任务 | 文件 | 状态 |
+|---|------|------|------|
+| 15 | Note Backend 接口 | `modules/interfaces/note_backend.py` | ✅ 已生成 |
+| 16 | 本地 Note 后端 | `modules/note_backends/local_backend.py` | ✅ 已生成 |
+| 17 | MCP 云端 Note 后端 | `modules/note_backends/mcp_backend.py` | ✅ 已生成 |
+| 18 | Note Tool 重构 | `tools/note_tool.py`（重写）| ✅ 已生成 |
+
+**路由逻辑：** 显式关键词（存到印象笔记/百度网盘）→ MCP 后端；其余 → 本地默认。
+
+### 需求5：Office Tool
+
+| # | 任务 | 文件 | 状态 |
+|---|------|------|------|
+| 19 | Office Tool 接口 | `modules/interfaces/office_tool_interface.py` | ✅ 已生成 |
+| 20 | Office Tool 实现 | `tools/office_tool.py` | ✅ 已生成 |
+
+**支持格式：** .docx / .xlsx / .pptx；Phase 1b 做内容 + 基础样式（标题/粗斜体/列表/表格/单元格格式）；图片/公式/动画留后。
+
+### 配置 & 注册
+
+| # | 任务 | 文件 | 状态 |
+|---|------|------|------|
+| 21 | 配置扩展 | `stone.config.json`（修改）| ✅ 已生成 |
+| 22 | 依赖更新 | `requirements.txt`（修改）| ✅ 已生成 |
+| 23 | 驱动注册 | `modules/registry.py`（修改）| ✅ 已生成 |
+| 24 | 人格更新 | `core/persona.md`（修改）| ✅ 已生成 |
+
+### 测试
+
+| # | 任务 | 文件 | 状态 |
+|---|------|------|------|
+| 25 | 记忆遗忘曲线测试 | `tests/test_memory_forgetting.py` | ✅ 已生成 |
+| 26 | 记忆提取测试 | `tests/test_memory_extractor.py` | ✅ 已生成 |
+| 27 | MCP Client 测试 | `tests/test_mcp_client.py` | ✅ 已生成 |
+| 28 | HTTP Tool 测试 | `tests/test_http_tool.py` | ✅ 已生成 |
+| 29 | Note Tool 测试 | `tests/test_note_tool.py` | ✅ 已生成 |
+| 30 | Office Tool 测试 | `tests/test_office_tool.py` | ✅ 已生成 |
+| 31 | LocalModelManager 测试 | `tests/test_local_model_manager.py` | ✅ 已生成 |
 
 ---
 
-## Phase 2（第3-4周，未开始）
+### Phase 1b 调测计划
 
-- [ ] MCP Server 接入（`registry/mcp_manager.py`）
-- [ ] 奇门遁甲工具（`tools/qimen_tool.py`）
+**第一轮：基础设施**（MCP Client + 进程管理 + HTTP Tool + 配置加载）
+**第二轮：长期记忆**（提取 + 存储 + 遗忘曲线 + 检索注入）
+**第三轮：MCP 工具**（印象笔记 + 百度网盘 + 记忆导出）
+**第四轮：Note + Office Tool**（本地读写 + 搜索 + Office 格式）
+**第五轮：集成**（全链路飞书端到端 + 测试覆盖）
+
+---
+
+## Phase 2（调整后）
+
 - [ ] 浏览器工具（`tools/browser_tool.py`，Playwright）
 - [ ] Redis 切换短期记忆（`modules/memory/redis_store.py`）
 - [ ] Cloudflare Tunnel 公网接入
+- [ ] 奇门遁甲工具（`tools/qimen_tool.py`）
 
 ---
 
@@ -133,28 +207,15 @@
 
 ---
 
-## 立即要做的事（下次会话必看）
+## 下次会话必看
 
-### 🔴 优先级1：配置环境（能跑起来的前提）
-1. 复制 `.env.example` → `.env`，填写：
-   - `ZHIPUAI_API_KEY`（智谱 GLM）
-   - `DASHSCOPE_API_KEY`（阿里云通义）
-   - `FEISHU_APP_ID` + `FEISHU_APP_SECRET`（飞书自建应用）
-   - `ADMIN_WHITELIST`（你的飞书 open_id）
-   - `WORKSPACE_DIR`（Agent 工作目录，需提前创建）
-   - `TAVILY_API_KEY`（搜索功能）
-2. 确认 Ollama 已运行：`ollama run qwen2.5:14b`
-3. 安装依赖：`pip install -r requirements.txt`
-4. 首次运行：`python main.py`
-
-### 🟡 优先级2：排查启动问题
-- 运行后检查 `/health` 端点各模块状态
-- 重点检查：model_router 能否连通 Ollama / 智谱 / 阿里云
-- 飞书 WebSocket 是否成功连接
-
-### 🟢 优先级3：Phase 1b 实现
-- Docker 沙箱是最关键的安全组件
-- 完成后运行 tests/ 下的安全测试
+### Phase 1b 调测顺序
+1. 安装新依赖：`pip install -r requirements.txt`
+2. 第一轮：`pytest tests/test_mcp_client.py tests/test_http_tool.py -v`
+3. 第二轮：`pytest tests/test_memory_forgetting.py tests/test_memory_extractor.py tests/test_local_model_manager.py -v`
+4. 第三轮：MCP 真实连接测试（需印象笔记/百度网盘 token）
+5. 第四轮：`pytest tests/test_note_tool.py tests/test_office_tool.py -v`
+6. 第五轮：飞书端到端黑盒测试
 
 ---
 
@@ -195,7 +256,7 @@
 
 ## 项目信息
 
-- **GitHub**：https://github.com/Tao-AIcoder/stone（私有）
+- **GitHub**：https://github.com/Tao-AIcoder/stone（公开，v0.1.0已发布）
 - **本地路径**：`~/stone/`
 - **Python 版本**：3.11+
 - **主入口**：`python main.py`（uvicorn 默认 8000 端口）

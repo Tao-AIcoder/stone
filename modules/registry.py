@@ -84,6 +84,33 @@ DRIVERS: dict[str, dict[str, str]] = {
     "scheduler": {
         "apscheduler": "core.scheduler:Scheduler",  # ✓ Phase 1
     },
+
+    # ── Embedding backend (local, privacy-safe) ───────────────────────────────
+    # Used by: memory retrieval, Phase 3 RAG
+    "embedding": {
+        "sentence_transformers": "modules.memory.embedding_backends.sentence_transformers_backend:SentenceTransformersBackend",  # ✓ Phase 1b
+        "ollama":                "modules.memory.embedding_backends.ollama_backend:OllamaEmbeddingBackend",                      # ✓ Phase 1b
+    },
+
+    # ── Note storage backend ──────────────────────────────────────────────────
+    # Third-party alternatives: Obsidian REST API, Notion API
+    "note_backend": {
+        "local":          "modules.note_backends.local_backend:LocalNoteBackend",   # ✓ Phase 1b
+        "evernote":       "modules.note_backends.mcp_backend:MCPNoteBackend",       # ✓ Phase 1b (via MCP)
+        "baidu_netdisk":  "modules.note_backends.mcp_backend:MCPNoteBackend",       # ✓ Phase 1b (via MCP)
+    },
+
+    # ── Office tool backend ───────────────────────────────────────────────────
+    # Third-party alternatives: LibreOffice API, Google Docs API
+    "office_tool": {
+        "python-office": "tools.office_tool:OfficeTool",   # ✓ Phase 1b
+    },
+
+    # ── HTTP client backend ───────────────────────────────────────────────────
+    # Third-party alternatives: aiohttp, requests
+    "http_client": {
+        "httpx": "tools.http_tool:HttpTool",   # ✓ Phase 1b
+    },
 }
 
 
