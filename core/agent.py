@@ -98,7 +98,11 @@ class Agent:
         # Load conversation history into context
         history = await self.context_manager.get_context(msg.user_id, msg.conv_id)
         persona = _load_persona()
-        ctx.messages = [{"role": "system", "content": persona}] + history
+        tools_schema = self.skill_registry.get_tools_schema()
+        system_content = persona
+        if tools_schema:
+            system_content += "\n\n" + _build_tools_instruction(tools_schema)
+        ctx.messages = [{"role": "system", "content": system_content}] + history
         ctx.messages.append({"role": "user", "content": msg.content})
 
         # Kick off the machine
@@ -251,19 +255,21 @@ class Agent:
                 logger.info("Text-parsed tool_calls [conv=%s]: %s", ctx.conv_id,
                             [(c.tool_name, c.params) for c in tool_calls])
 
-        # Build the assistant message for history with proper tool_calls structure
+        # Build the assistant message for history with proper tool_calls structure.
+        # Use call_id from the processed tool_calls list (which guarantees a non-empty UUID),
+        # not from raw llm_resp.tool_calls (which may have empty id from Ollama).
         assistant_msg: dict[str, Any] = {"role": "assistant", "content": llm_resp.text}
-        if llm_resp.tool_calls:
+        if tool_calls:
             assistant_msg["tool_calls"] = [
                 {
-                    "id": tc.get("call_id", ""),
+                    "id": tc.call_id,
                     "type": "function",
                     "function": {
-                        "name": tc["tool_name"],
-                        "arguments": json.dumps(tc.get("params", {}), ensure_ascii=False),
+                        "name": tc.tool_name,
+                        "arguments": json.dumps(tc.params, ensure_ascii=False),
                     },
                 }
-                for tc in llm_resp.tool_calls
+                for tc in tool_calls
             ]
 
         if tool_calls and ctx.tool_iteration < ctx.max_tool_iterations:

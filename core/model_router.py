@@ -170,7 +170,7 @@ class ModelRouter(ModelRouterInterface):
         if model_id.startswith("glm"):
             return await self._call_zhipuai(model_id, messages, tools=tools)
         if model_id.startswith("qwen"):
-            return await self._call_dashscope(model_id, messages)
+            return await self._call_dashscope(model_id, messages, tools=tools)
         # Unknown model – try ollama as generic fallback
         logger.warning("Unknown model_id %r, attempting via Ollama", model_id)
         return await self._call_ollama(model_id, messages, tools=tools)
@@ -294,7 +294,12 @@ class ModelRouter(ModelRouterInterface):
 
     # ── 阿里云通义 (DashScope) ────────────────────────────────────────────────
 
-    async def _call_dashscope(self, model_id: str, messages: list[dict[str, Any]]) -> LLMResponse:
+    async def _call_dashscope(
+        self,
+        model_id: str,
+        messages: list[dict[str, Any]],
+        tools: list[dict[str, Any]] | None = None,
+    ) -> LLMResponse:
         if not settings.dashscope_api_key:
             raise ModelError(message="DASHSCOPE_API_KEY 未配置", model_id=model_id)
         try:
@@ -304,18 +309,23 @@ class ModelRouter(ModelRouterInterface):
             raise ModelError(message="dashscope SDK 未安装", model_id=model_id) from exc
 
         dashscope.api_key = settings.dashscope_api_key
+        oai_tools = [{"type": "function", "function": t} for t in tools] if tools else None
 
         try:
             import asyncio
             loop = asyncio.get_running_loop()
+            call_kwargs: dict[str, Any] = dict(
+                model=model_id,
+                messages=messages,
+                result_format="message",
+                max_tokens=MAX_TOKENS_DEFAULT,
+            )
+            if oai_tools:
+                call_kwargs["tools"] = oai_tools
+                call_kwargs["tool_choice"] = "auto"
             response = await loop.run_in_executor(
                 None,
-                lambda: Generation.call(
-                    model=model_id,
-                    messages=messages,
-                    result_format="message",
-                    max_tokens=MAX_TOKENS_DEFAULT,
-                ),
+                lambda: Generation.call(**call_kwargs),
             )
             if response.status_code != 200:
                 if response.status_code in (429, 403):
@@ -324,8 +334,25 @@ class ModelRouter(ModelRouterInterface):
                     message=f"DashScope 错误 {response.status_code}: {response.message}",
                     model_id=model_id,
                 )
-            content = response.output.choices[0].message.content
-            return LLMResponse(text=content or "")
+            msg = response.output.choices[0].message
+            content: str = msg.content or ""
+
+            # Extract native tool calls
+            parsed_calls = []
+            tool_calls_raw = getattr(msg, "tool_calls", None) or []
+            for tc in tool_calls_raw:
+                try:
+                    fn = tc.function if hasattr(tc, "function") else tc.get("function", {})
+                    name = fn.name if hasattr(fn, "name") else fn.get("name", "")
+                    args_raw = fn.arguments if hasattr(fn, "arguments") else fn.get("arguments", "{}")
+                    params = json.loads(args_raw) if isinstance(args_raw, str) else args_raw
+                    call_id = tc.id if hasattr(tc, "id") else tc.get("id", "")
+                    parsed_calls.append({"tool_name": name, "params": params, "call_id": call_id or ""})
+                except (json.JSONDecodeError, AttributeError):
+                    continue
+
+            logger.debug("DashScope response text=%r tool_calls=%s", content[:100], parsed_calls)
+            return LLMResponse(text=content, tool_calls=parsed_calls)
         except (ModelError, ModelQuotaError):
             raise
         except Exception as exc:

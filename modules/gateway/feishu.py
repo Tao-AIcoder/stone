@@ -344,7 +344,10 @@ class FeishuGateway(GatewayInterface):
             finally:
                 ack_task.cancel()
 
-            await self.send_reply(chat_id, message_id, bot_response.content)
+            content = bot_response.content
+            if bot_response.requires_confirmation:
+                content += "\n\n---\n回复「**确认**」执行 / 回复「**取消**」放弃"
+            await self.send_reply(chat_id, message_id, content)
 
         except Exception as exc:
             logger.exception("FeishuGateway: unhandled error in message handler: %s", exc)

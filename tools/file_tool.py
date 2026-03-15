@@ -60,14 +60,15 @@ class FileTool(ToolInterface):
             "- read_file：读取文件内容\n"
             "- write_file：创建或写入文件（创建空文件时 content 传空字符串）\n"
             "- delete_file：删除文件（需确认）\n"
+            "- delete_dir：删除目录及其所有内容（需确认，递归删除）\n"
             "- list_dir：列出目录内容（path='.' 列出工作目录根）\n"
             "- create_dir：创建目录，不要用此 action 创建文件\n"
             "路径均相对于工作目录，不允许 '..' 越界。写操作和删除操作需要用户确认。"
         )
 
     def needs_confirmation_for(self, params: dict) -> bool:
-        """write_file, delete_file, create_dir need confirmation; read/list are safe."""
-        return params.get("action", "") in ("write_file", "delete_file", "create_dir")
+        """write_file, delete_file, delete_dir, create_dir need confirmation; read/list are safe."""
+        return params.get("action", "") in ("write_file", "delete_file", "delete_dir", "create_dir")
 
     @property
     def workspace(self) -> Path:
@@ -86,6 +87,7 @@ class FileTool(ToolInterface):
             "read_file": self._read_file,
             "write_file": self._write_file,
             "delete_file": self._delete_file,
+            "delete_dir": self._delete_dir,
             "list_dir": self._list_dir,
             "create_dir": self._create_dir,
         }
@@ -191,6 +193,35 @@ class FileTool(ToolInterface):
             metadata={"path": str(target)},
         )
 
+    # ── Delete Dir ────────────────────────────────────────────────────────────
+
+    async def _delete_dir(self, params: dict[str, Any], user_id: str) -> ToolResult:
+        import shutil
+
+        path_str: str = params.get("path", "")
+        if not path_str:
+            return ToolResult.fail("缺少参数 'path'")
+
+        target = _resolve_safe(self.workspace, path_str)
+
+        if not target.exists():
+            return ToolResult.fail(f"目录不存在：{path_str}")
+        if not target.is_dir():
+            return ToolResult.fail(f"{path_str!r} 不是目录，请使用 delete_file 删除文件")
+
+        try:
+            shutil.rmtree(target)
+        except PermissionError as exc:
+            raise ToolError(message=f"权限拒绝：{exc}", tool_name=self.name) from exc
+        except OSError as exc:
+            raise ToolError(message=f"删除目录失败：{exc}", tool_name=self.name) from exc
+
+        logger.info("FileTool.delete_dir [user=%s]: %s", user_id, path_str)
+        return ToolResult.ok(
+            output=f"目录已删除：{path_str}",
+            metadata={"path": str(target)},
+        )
+
     # ── List Dir ──────────────────────────────────────────────────────────────
 
     async def _list_dir(self, params: dict[str, Any], user_id: str) -> ToolResult:
@@ -269,12 +300,13 @@ class FileTool(ToolInterface):
                 "properties": {
                     "action": {
                         "type": "string",
-                        "enum": ["read_file", "write_file", "delete_file", "list_dir", "create_dir"],
+                        "enum": ["read_file", "write_file", "delete_file", "delete_dir", "list_dir", "create_dir"],
                         "description": (
                             "要执行的文件操作：\n"
                             "- read_file: 读取文件内容\n"
                             "- write_file: 创建或写入文件（创建空文件时 content 传 ''，会自动创建父目录）\n"
                             "- delete_file: 删除文件（需用户确认）\n"
+                            "- delete_dir: 删除目录及其所有内容，递归删除（需用户确认）\n"
                             "- list_dir: 列出目录内容，path='.' 列出工作目录根\n"
                             "- create_dir: 创建目录（不是文件！创建文件请用 write_file）"
                         ),
