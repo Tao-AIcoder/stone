@@ -107,6 +107,7 @@ class AgentContext(BaseModel):
     tool_results: list[ToolResult] = Field(default_factory=list)
     tool_iteration: int = 0
     max_tool_iterations: int = 10
+    thinking_retries: int = 0       # counts LLM retries within _handle_thinking
 
     # Dry-run
     dry_run_plan: dict[str, Any] | None = None

@@ -1,238 +1,275 @@
-# 默行者 (STONE)
+# 默行者 STONE v0.1.0
 
-自托管个人 AI 助手，以飞书为主要交互界面，本地 + 云端大模型路由。
+> **S**elf-hosted Personal AI **T**ask Agent with **O**llama-first privacy routing and **N**ative **E**xecution — **默行者**，沉默而高效地执行你的指令。
 
----
-
-## 架构概览
-
-STONE 分为两层：**可替换层**（外部有成熟三方组件可换）和**核心层**（系统特有逻辑，不过度乐高化）。
-
-```
-┌─────────────────────────────────────────────────────────┐
-│                    可替换层（乐高化）                      │
-│                                                         │
-│  Gateway  │  Memory  │  Auth  │  Sandbox  │  Scheduler  │
-│  飞书/TG  │ SQLite/  │ 白名单/ │ Noop/     │ APSched/   │
-│           │ Redis    │ OAuth  │ Docker    │ Celery      │
-│                                                         │
-│  ModelRouter  │  Audit  │  PromptGuard                  │
-│  直连/LiteLLM │ SQLite/ │ 正则/                         │
-│               │ ELK     │ LlamaGuard                    │
-└─────────────────────────────────────────────────────────┘
-┌─────────────────────────────────────────────────────────┐
-│                    核心层（不可替换）                      │
-│                                                         │
-│   Agent  ──  StateMachine  ──  ContextManager           │
-│                  │                                      │
-│           DryRunManager  ──  SkillRegistry              │
-└─────────────────────────────────────────────────────────┘
-```
+一个运行在你自己服务器上的私人 AI 助手，通过**飞书（Lark）消息**与你对话，具备真实的文件操作、代码执行、网络搜索、笔记管理等能力。核心设计目标：**隐私优先、可审计、不过度依赖云端**。
 
 ---
 
-## 可替换层：如何换模块
+## 亮点
 
-所有可替换模块通过 `stone.config.json` 的 `driver` 字段控制，**无需修改任何业务代码**。
-
-### 当前可替换模块
-
-| 组件 | 接口文件 | 当前 driver | 可替换为 |
-|------|----------|-------------|----------|
-| **网关** (Gateway) | `modules/interfaces/gateway.py` | `feishu` | `telegram`、`wechat`（Phase 2）|
-| **短期记忆** | `modules/interfaces/memory.py` | `inmemory` | `redis`（Phase 2）|
-| **长期存储** | `modules/interfaces/memory.py` | `sqlite` | `postgres`（future）|
-| **模型路由** | `modules/interfaces/model_router.py` | `direct` | `litellm`、`openrouter`（future）|
-| **认证** | `modules/interfaces/auth.py` | `whitelist` | `oauth2`、`ldap`（future）|
-| **审计日志** | `modules/interfaces/audit.py` | `sqlite` | `elk`、`loki`（future）|
-| **执行沙箱** | `modules/interfaces/sandbox.py` | `noop` | `docker`（Phase 1b）|
-| **注入防护** | `modules/interfaces/prompt_guard.py` | `regex` | `llama-guard`、`lakera`（future）|
-| **调度器** | `modules/interfaces/scheduler.py` | `apscheduler` | `celery`、`rq`（future）|
-
-### 替换步骤（以把短期记忆换成 Redis 为例）
-
-1. **实现接口**
-
-```python
-# modules/memory/redis_store.py
-from modules.interfaces.memory import ShortTermMemoryInterface
-
-class RedisStore(ShortTermMemoryInterface):
-    async def get_context(self, user_id, conv_id): ...
-    async def save_context(self, user_id, conv_id, messages): ...
-    # ... 其余方法
-```
-
-2. **注册到 registry**
-
-```python
-# modules/registry.py  DRIVERS["short_term_memory"]
-"redis": "modules.memory.redis_store:RedisStore",
-```
-
-3. **改配置，完成**
-
-```json
-// stone.config.json
-"memory": {
-  "short_term": { "driver": "redis" }
-}
-```
-
-启动时 `ModuleLoader` 自动加载 `RedisStore`，其他代码零修改。
+| 特性 | 说明 |
+|------|------|
+| 🔒 **隐私感知路由** | 敏感内容 → 本地 Ollama；代码任务 → DashScope qwen-coder-plus；通用对话 → ZhipuAI GLM-4-plus |
+| 🛡️ **危险操作二次确认** | 删除文件/目录、执行 Shell 命令等操作生成 dry-run 预览计划，用户回复「确认」才执行 |
+| 🔗 **飞书原生接入** | WebSocket 长连接，消息实时到达，支持私聊和群聊 |
+| 🧠 **7 状态机驱动** | IDLE → THINKING → TOOL_SELECTING → DRY_RUN_PENDING → EXECUTING → RESPONDING → ERROR_HANDLING |
+| 📋 **上下文持久化** | 滑动窗口 + LLM 摘要压缩，SQLite 持久化，重启不丢失对话历史 |
+| 🕒 **定时任务** | APScheduler 驱动，支持 cron 表达式，可通过 API 管理计划任务 |
+| 🔌 **模块化架构** | Gateway / Memory / Sandbox / Auth 均可通过 `stone.config.json` 替换实现 |
 
 ---
 
-## 核心层：不可替换组件
+## 能力一览
 
-以下组件是系统特有逻辑，没有通用三方组件可以平替，**不做乐高化，只保证解耦便于测试**。
+### 工具集
 
-### Agent（`core/agent.py`）
+| 工具 | 能做什么 |
+|------|---------|
+| `file_tool` | 读写文件、创建/删除目录、列目录（沙盒限制在 WORKSPACE_DIR 内） |
+| `bash_tool` | 在受控环境执行 Shell 命令（危险命令需确认） |
+| `code_tool` | 在 Docker 容器或 Noop 沙盒中安全运行 Python 代码片段 |
+| `search_tool` | Tavily API 驱动的网络搜索，返回摘要结果 |
+| `note_tool` | 在 NOTES_DIR 下创建/读取/列出 Markdown 笔记 |
+| `http_tool` | 发起 HTTP 请求，抓取网页内容（BeautifulSoup 解析） |
+| `git_tool` | git status / diff / commit / log（限制在指定仓库） |
 
-主处理循环，接收 `UserMessage`，驱动状态机执行，返回 `BotResponse`。
+### 多意图顺序执行
 
-```
-UserMessage → Agent.process()
-  → StateMachine.run(ctx)
-      → THINKING → TOOL_SELECTING → EXECUTING → RESPONDING
-  → BotResponse
-```
+用户说「先删除旧目录，再写入新文件，然后搜索最新资讯」，STONE 会**严格按顺序**逐步执行，每步等待工具返回结果后再决定下一步，不会跳过需要确认的步骤。
 
-Agent 通过依赖注入接收所有可替换组件，本身不持有具体实现：
+### 对话记忆
 
-```python
-Agent(
-    model_router=...,     # ModelRouterInterface
-    skill_registry=...,   # SkillRegistry
-    context_manager=...,  # ContextManager
-    dry_run_manager=...,  # DryRunManager
-    audit_logger=...,     # AuditInterface
-)
-```
-
-### StateMachine（`core/state_machine.py`）
-
-7 状态机，转换表严格校验，防止非法跳转：
-
-```
-IDLE → THINKING → TOOL_SELECTING → EXECUTING
-                ↘                ↗
-              RESPONDING → IDLE
-              ERROR_HANDLING → IDLE
-              DRY_RUN_PENDING → THINKING (confirm) / IDLE (cancel)
-```
-
-### ContextManager（`core/context_manager.py`）
-
-滑动窗口上下文管理 + 超限自动 Compact（摘要压缩）。依赖 `ShortTermMemoryInterface` 和 `LongTermMemoryInterface`，可通过换 driver 间接替换存储后端。
-
-### DryRunManager（`core/dry_run.py`）
-
-高风险操作的二次确认机制。生成执行计划 → 等待用户确认 → 执行或取消。
-
-### SkillRegistry（`registry/skill_registry.py`）
-
-工具注册中心，管理所有 `Tool` 的元数据和 JSON Schema，供 Agent 构建 LLM function-calling 参数。
+- 短期：每个 `conv_id`（飞书 `chat_id`）独立的消息窗口（默认 20 轮）
+- 长期：超出窗口时 LLM 自动生成摘要，存入 SQLite，下次对话恢复
+- 重启后从 SQLite 恢复上下文，无需重新建立背景
 
 ---
 
-## 目录结构
+## 架构
 
 ```
-stone/
-├── main.py                    # FastAPI 入口，lifespan 管理
-├── config.py                  # 环境变量 (pydantic-settings)
-├── stone.config.json          # 模块 driver 配置
-│
-├── core/                      # 核心层（不可替换）
-│   ├── agent.py               # Agent 主循环
-│   ├── state_machine.py       # 7状态机
-│   ├── context_manager.py     # 上下文滑动窗口
-│   ├── dry_run.py             # 干跑确认机制
-│   ├── model_router.py        # LLM 路由（实现 ModelRouterInterface）
-│   ├── scheduler.py           # 定时任务（实现 SchedulerInterface）
-│   └── persona.md             # 默行者人格 system prompt
-│
-├── modules/                   # 可替换层
-│   ├── interfaces/            # 9 个 ABC 接口定义
-│   ├── registry.py            # DRIVERS 字典 + load_driver()
-│   ├── loader.py              # 14步启动，读 driver 配置动态加载
-│   ├── gateway/feishu.py      # 飞书 WebSocket 网关
-│   ├── memory/
-│   │   ├── inmemory_store.py  # 短期记忆（内存）
-│   │   └── sqlite_store.py    # 长期记忆（SQLite）
-│   └── sandbox/
-│       ├── noop.py            # Phase 1 沙箱（无隔离）
-│       └── docker.py          # Phase 1b 沙箱（Docker）
-│
-├── security/                  # 安全模块（实现对应接口）
-│   ├── auth.py                # 白名单 + bcrypt PIN + TOTP
-│   ├── audit.py               # 审计日志
-│   └── prompt_guard.py        # 10种注入模式检测
-│
-├── tools/                     # 工具实现
-│   ├── base.py                # ToolInterface ABC
-│   ├── file_tool.py           # 文件读写（白名单目录）
-│   ├── bash_tool.py           # Shell 命令（白名单，Phase 1a 无沙箱）
-│   └── search_tool.py         # Tavily 搜索
-│
-├── models/                    # Pydantic 数据模型
-├── api/                       # FastAPI 路由
-│   ├── chat.py                # POST /api/chat
-│   ├── health.py              # GET /health
-│   └── admin.py               # GET/POST /api/admin/*
-├── registry/skill_registry.py # 工具注册中心
-└── tests/                     # 318 个测试（全部通过）
+┌──────────────────────────────────────────────────────────────┐
+│                     可替换层（乐高化）                         │
+│                                                              │
+│  Gateway       Memory        Auth         Sandbox           │
+│  Feishu WS  │  SQLite /   │  白名单 /   │  Noop /          │
+│  (Telegram) │  InMemory   │  TOTP+PIN   │  Docker          │
+│                                                              │
+│  ModelRouter         Audit          PromptGuard             │
+│  Ollama/ZhipuAI/  │  SQLite /    │  关键词 /              │
+│  DashScope        │  文件日志     │  正则扫描               │
+└──────────────────────────────────────────────────────────────┘
+                              │
+┌──────────────────────────────────────────────────────────────┐
+│                       核心层（不乐高化）                       │
+│                                                              │
+│   Agent (state machine)  ←→  ContextManager                 │
+│         ↕                         ↕                         │
+│   ToolRegistry / DryRunManager   SQLite (aiosqlite)         │
+└──────────────────────────────────────────────────────────────┘
 ```
+
+### 模型路由逻辑
+
+```
+请求 → privacy_sensitive?
+  ├─ 是 → Ollama (qwen2.5:14b，本地，不出网)
+  └─ 否 → task_type?
+          ├─ code → DashScope qwen-coder-plus
+          └─ 其他 → ZhipuAI GLM-4-plus
+                   (token 超限时降级到 Ollama)
+```
+
+### 安全机制
+
+- **白名单认证**：只有 `ADMIN_WHITELIST` 中的飞书 open_id 可以发消息
+- **滑动窗口限流**：每用户 20 条/60 秒
+- **Prompt Injection 扫描**：检测并拦截提示词注入攻击
+- **危险操作 dry-run**：`delete_file`、`delete_dir`、`bash_tool` 等需用户二次确认
+- **TOTP + bcrypt PIN 双因子**：Admin API 需要 TOTP 验证码 + bcrypt PIN
+- **安全审计日志**：白名单拦截、限流、注入攻击均写入审计表
 
 ---
 
 ## 快速开始
 
-### 1. 配置环境
+### 前提条件
+
+- Python 3.11+
+- [Ollama](https://ollama.ai) 已运行，已拉取 `qwen2.5:14b`（或其他模型）
+- 飞书自建应用，开通「接收消息」权限，启用 WebSocket 长连接
+- ZhipuAI 和/或 DashScope API Key（可只用 Ollama 本地模式）
+
+### 安装
+
+```bash
+git clone git@github.com:Tao-AIcoder/stone.git
+cd stone
+python -m venv .venv && source .venv/bin/activate
+pip install -r requirements.txt
+```
+
+### 配置
 
 ```bash
 cp .env.example .env
-# 填写以下字段：
-# ZHIPUAI_API_KEY        智谱 GLM API Key
-# DASHSCOPE_API_KEY      阿里云通义 API Key
-# FEISHU_APP_ID          飞书自建应用 ID
-# FEISHU_APP_SECRET      飞书自建应用 Secret
-# ADMIN_WHITELIST        你的飞书 open_id（逗号分隔）
-# ADMIN_PIN              管理员 PIN（bcrypt hash）
-# WORKSPACE_DIR          Agent 工作目录（需提前创建）
-# TAVILY_API_KEY         Tavily 搜索 API Key
+# 编辑 .env，填入你的密钥和配置
 ```
 
-### 2. 启动本地模型
+关键配置项：
 
-```bash
-ollama run qwen2.5:14b
+```env
+# 飞书应用凭证
+FEISHU_APP_ID=cli_xxx
+FEISHU_APP_SECRET=xxx
+
+# 允许使用的飞书用户 open_id（逗号分隔）
+ADMIN_WHITELIST=ou_xxxxxxxx,ou_yyyyyyyy
+
+# 模型 API Key
+ZHIPUAI_API_KEY=xxx
+DASHSCOPE_API_KEY=sk-xxx
+
+# 本地 Ollama 地址
+OLLAMA_BASE_URL=http://localhost:11434
+
+# 工作目录（file_tool 沙盒根目录）
+WORKSPACE_DIR=/home/you/stone-workspace
+NOTES_DIR=/home/you/notes
+
+# 网络搜索（可选）
+TAVILY_API_KEY=tvly-xxx
+
+# Admin 认证
+ADMIN_PIN=<bcrypt hash>
+TOTP_SECRET=<BASE32>
 ```
 
-### 3. 安装依赖并运行
+模块驱动配置（`stone.config.json`）：
 
-```bash
-pip install -r requirements.txt
-python main.py
-# 访问 http://localhost:8000/health 验证启动状态
+```json
+{
+  "gateway": "feishu",
+  "memory_backend": "sqlite",
+  "sandbox": "noop",
+  "auth_backend": "whitelist"
+}
 ```
 
-### 4. 运行测试
+### 启动
 
 ```bash
-pytest tests/ -v
-# 预期：318 passed
+uvicorn main:app --host 0.0.0.0 --port 8000
+```
+
+健康检查：
+
+```bash
+curl http://localhost:8000/health
+# {"status":"ok","version":"0.1.0"}
 ```
 
 ---
 
-## 开发路线
+## API
 
-| 阶段 | 目标 | 状态 |
-|------|------|------|
-| Phase 1a | 最小可对话链路（飞书 + 3工具 + SQLite）| ✅ 完成 |
-| Phase 1b | Docker 沙箱 + PIN/TOTP + 更多工具 | 🔄 进行中 |
-| Phase 2  | MCP、Redis、Telegram/WeChat 网关 | 📋 计划中 |
-| Phase 3  | RAG（ChromaDB + LlamaIndex）| 📋 计划中 |
-| Phase 4  | 微调 + Web UI | 📋 计划中 |
+| 端点 | 说明 |
+|------|------|
+| `GET /health` | 健康检查 |
+| `GET /api/admin/tasks` | 查看定时任务（需 TOTP） |
+| `POST /api/admin/tasks` | 创建定时任务 |
+| `DELETE /api/admin/tasks/{id}` | 删除定时任务 |
+| `GET /api/admin/skills` | 查看已注册技能 |
+| `GET /api/admin/audit` | 审计日志 |
+
+---
+
+## 飞书交互示例
+
+```
+你：帮我创建目录 projects/stone，然后写一个 hello.py
+STONE：收到，处理中，请稍候...
+STONE：已创建目录 projects/stone，已写入 hello.py
+
+你：删除 projects/old_backup 目录
+STONE：以下操作需要确认：
+       • delete_dir: projects/old_backup
+       回复「确认」执行 / 回复「取消」放弃
+
+你：确认
+STONE：已删除目录 projects/old_backup
+
+你：搜索 Claude 4 最新发布信息
+STONE：[搜索结果摘要...]
+```
+
+---
+
+## 测试
+
+```bash
+pytest tests/ -v
+```
+
+关键测试覆盖：
+- `test_bug_tool_dispatch.py` — 工具分发链路、正则解析、参数清洗
+- `test_state_machine.py` — 状态机合法/非法转换
+- `test_dry_run.py` — 危险操作确认流程
+- `test_context_manager.py` — 上下文压缩与恢复
+
+---
+
+## 项目结构
+
+```
+stone/
+├── main.py                 # FastAPI 入口
+├── config.py               # Pydantic Settings 配置
+├── stone.config.json       # 模块驱动配置
+├── core/
+│   ├── agent.py            # 核心状态机 + 工具分发
+│   ├── model_router.py     # 多模型路由
+│   ├── context_manager.py  # 对话上下文管理
+│   ├── dry_run.py          # 危险操作 dry-run 管理
+│   ├── scheduler.py        # APScheduler 定时任务
+│   └── state_machine.py    # 状态转换验证
+├── tools/                  # 工具实现
+│   ├── file_tool.py
+│   ├── bash_tool.py
+│   ├── code_tool.py
+│   ├── search_tool.py
+│   ├── note_tool.py
+│   ├── http_tool.py
+│   └── git_tool.py
+├── modules/
+│   ├── gateway/feishu.py   # 飞书 WebSocket 网关
+│   ├── memory/             # 短期+长期记忆
+│   └── sandbox/            # 代码执行沙盒
+├── security/               # Auth / AuditLogger / PromptGuard
+├── models/                 # Pydantic 数据模型
+├── api/                    # FastAPI 路由
+├── registry/               # 工具/技能注册表
+└── tests/                  # 单元测试
+```
+
+---
+
+## 路线图
+
+- [ ] Telegram Bot 网关（gateway 接口已预留）
+- [ ] Redis 短期记忆后端（替换 InMemory）
+- [ ] 向量记忆（modules/vector 已预留接口）
+- [ ] 更多内置工具（calendar_tool、email_tool）
+- [ ] Web UI 管理面板
+- [ ] 多用户隔离沙盒
+
+---
+
+## License
+
+MIT License. See [LICENSE](LICENSE).
+
+---
+
+*默行者 — 沉默而高效。*

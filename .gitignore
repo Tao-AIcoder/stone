@@ -33,6 +33,8 @@ venv.bak/
 
 # Database
 *.db
+*.db-shm
+*.db-wal
 stone.db
 *.sqlite
 *.sqlite3
@@ -71,3 +73,7 @@ dmypy.json
 
 # Jupyter
 .ipynb_checkpoints/
+
+# Workspace data
+stone-workspace/
+notes/

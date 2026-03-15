@@ -339,8 +339,8 @@ class TestToolCallIdConsistency:
             'assistant_msg 仍使用 tc.get("call_id","")，可能导致 Ollama id 为空串'
 
     def test_uuid_generated_when_call_id_empty(self):
-        """当 LLM 返回空 call_id 时，ToolCall 应自动生成 UUID。"""
-        src = inspect.getsource(_agent_module.Agent._handle_thinking)
+        """当 LLM 返回空 call_id 时，_parse_tool_calls 应自动生成 UUID。"""
+        src = inspect.getsource(_agent_module._parse_tool_calls)
         assert "uuid" in src, "未见 UUID 生成逻辑，call_id 可能为空串"
 
     def test_executing_appends_tool_message_with_call_id(self):

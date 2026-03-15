@@ -283,11 +283,14 @@ class FeishuGateway(GatewayInterface):
                 return
 
             # ── Dry-run confirmation / cancellation ───────────────────────
+            stripped = text_content.strip()
             if self.agent.dry_run_manager.has_pending(chat_id):
-                stripped = text_content.strip()
                 if stripped in _CONFIRM_WORDS:
                     bot_response = await self.agent.execute_confirmed(chat_id, open_id)
-                    await self.send_reply(chat_id, message_id, bot_response.content)
+                    content = bot_response.content
+                    if bot_response.requires_confirmation:
+                        content += "\n\n---\n回复「**确认**」执行 / 回复「**取消**」放弃"
+                    await self.send_reply(chat_id, message_id, content)
                     return
                 if stripped in _CANCEL_WORDS:
                     try:
@@ -296,6 +299,10 @@ class FeishuGateway(GatewayInterface):
                         pass
                     await self.send_reply(chat_id, message_id, "已取消操作。")
                     return
+            elif stripped in _CONFIRM_WORDS or stripped in _CANCEL_WORDS:
+                # No pending plan — guard against LLM hallucinating a success response
+                await self.send_reply(chat_id, message_id, "当前没有待确认的操作，请先描述您想执行什么。")
+                return
 
             # ── Prompt guard ──────────────────────────────────────────────
             try:

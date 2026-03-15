@@ -187,28 +187,54 @@ class Agent:
 
         history = await self.context_manager.get_context(user_id, conv_id)
         persona = _load_persona()
-        ctx.messages = [{"role": "system", "content": persona}] + history
+        tools_schema = self.skill_registry.get_tools_schema()
+        system_content = persona
+        if tools_schema:
+            system_content += "\n\n" + _build_tools_instruction(tools_schema)
+        ctx.messages = [{"role": "system", "content": system_content}] + history
 
-        ctx.state = AgentState.EXECUTING  # bypass state machine validation
+        # Re-surface the original user message so the LLM knows the full intent
+        # after tool execution (dry-run skips saving to context, so it's not in history).
+        ctx.messages.append({"role": "user", "content": original_user_msg})
+
+        # Prepend a synthetic assistant tool_calls message so the conversation
+        # follows the standard [user → assistant(tool_calls) → tool → assistant] pattern.
+        ctx.messages.append({
+            "role": "assistant",
+            "content": "",
+            "tool_calls": [
+                {
+                    "id": tc.call_id,
+                    "type": "function",
+                    "function": {
+                        "name": tc.tool_name,
+                        "arguments": json.dumps(tc.params, ensure_ascii=False),
+                    },
+                }
+                for tc in tool_calls
+            ],
+        })
+
+        # Execute the confirmed tool calls (appends tool-role results to ctx.messages)
+        ctx.state = AgentState.EXECUTING  # bypass transition validation
         await self._handle_executing(ctx)
-        # State is now THINKING — do NOT continue into the state machine.
-        # Format the response directly from tool results so the LLM cannot
-        # re-trigger another dry-run by producing a new tool call JSON.
-        parts = []
-        for r in ctx.tool_results:
-            if r.success:
-                parts.append(f"✅ {r.output}")
-            else:
-                parts.append(f"❌ {r.tool_name} 失败：{r.error}")
-        ctx.final_response = "\n".join(parts) if parts else "操作已执行完毕。"
-        ctx.state = AgentState.IDLE
 
-        await self.context_manager.save_context(
-            user_id=user_id,
-            conv_id=conv_id,
-            user_msg=original_user_msg,
-            assistant_msg=ctx.final_response or ctx.error_message,
+        # State is now THINKING — continue the full state machine so the LLM
+        # can process remaining intents from the original multi-step request.
+        await self._sm.run(ctx)
+
+        # Only persist when there is no follow-on dry-run waiting for user input.
+        next_dry_run = (
+            ctx.final_response is not None
+            and ctx.final_response.startswith("⚠️")
         )
+        if not next_dry_run:
+            await self.context_manager.save_context(
+                user_id=user_id,
+                conv_id=conv_id,
+                user_msg=original_user_msg,
+                assistant_msg=ctx.final_response or ctx.error_message,
+            )
 
         await self.audit_logger.log(
             level="INFO",
@@ -222,6 +248,8 @@ class Agent:
             conv_id=ctx.conv_id,
             user_id=ctx.user_id,
             content=self._sm.build_response(ctx),
+            requires_confirmation=next_dry_run,
+            confirmation_token=ctx.conv_id if next_dry_run else "",
             tools_used=[r.tool_name for r in ctx.tool_results],
         )
 
@@ -247,22 +275,41 @@ class Agent:
                      ctx.conv_id, llm_resp.text[:200], llm_resp.tool_calls)
 
         # Build ToolCall objects — prefer native tool calls, fall back to JSON-in-text
-        tool_calls: list[ToolCall] = []
-        if llm_resp.tool_calls:
-            for tc in llm_resp.tool_calls:
-                if tc.get("tool_name"):
-                    tool_calls.append(ToolCall(
-                        tool_name=tc["tool_name"],
-                        params=tc.get("params", {}),
-                        call_id=tc.get("call_id") or str(uuid.uuid4()),
-                    ))
-            logger.info("Native tool_calls [conv=%s]: %s", ctx.conv_id,
+        tool_calls: list[ToolCall] = _parse_tool_calls(llm_resp)
+        if tool_calls:
+            logger.info("Tool_calls [conv=%s]: %s", ctx.conv_id,
                         [(c.tool_name, c.params) for c in tool_calls])
-        else:
-            tool_calls = _extract_tool_calls(llm_resp.text)
-            if tool_calls:
-                logger.info("Text-parsed tool_calls [conv=%s]: %s", ctx.conv_id,
-                            [(c.tool_name, c.params) for c in tool_calls])
+
+        # ── Retry once if LLM returned text-only on the very first attempt ──
+        # Prevents the LLM from describing what it will do instead of doing it.
+        # Only retry when tools are available and no tool results yet (not mid-loop).
+        if not tool_calls and tools_schema and ctx.thinking_retries == 0 and not ctx.tool_results:
+            ctx.thinking_retries += 1
+            retry_messages = list(ctx.messages) + [
+                {"role": "assistant", "content": llm_resp.text},
+                {
+                    "role": "user",
+                    "content": (
+                        "如果完成这个请求需要调用工具，请**立即**以规定的 JSON 格式输出工具调用，"
+                        "不要再描述计划。如果确实不需要工具，请直接给出最终答案。"
+                    ),
+                },
+            ]
+            llm_resp2 = await self.model_router.chat(
+                messages=retry_messages,
+                task_type=ctx.task_type,
+                user_id=ctx.user_id,
+                privacy_sensitive=ctx.privacy_sensitive,
+                tools=tools_schema or None,
+            )
+            retry_calls = _parse_tool_calls(llm_resp2)
+            if retry_calls:
+                logger.info("Retry succeeded [conv=%s]: %s", ctx.conv_id,
+                            [(c.tool_name, c.params) for c in retry_calls])
+                llm_resp = llm_resp2
+                tool_calls = retry_calls
+            else:
+                logger.debug("Retry still no tool_calls [conv=%s], using original text", ctx.conv_id)
 
         # Build the assistant message for history with proper tool_calls structure.
         # Use call_id from the processed tool_calls list (which guarantees a non-empty UUID),
@@ -479,6 +526,81 @@ def _extract_tool_calls(text: str) -> list[ToolCall]:
     return []
 
 
+def _sanitize_params(params: dict[str, Any]) -> dict[str, Any]:
+    """
+    Recover correct params when an LLM embeds XML-like arg tags inside a value.
+
+    Some models (e.g. Qwen) output the argument list inside the *first* param
+    instead of producing proper key/value pairs:
+
+        action = 'write_file\\n<arg_key>path</arg_key>\\n<arg_value>foo.md'
+
+    This function:
+    1. Strips the embedded XML, keeping only the prefix as the actual value.
+    2. Extracts the embedded key→value pairs and merges them back into params.
+
+    Result for the above example:
+        {'action': 'write_file', 'path': 'foo.md'}
+    """
+    import re as _re
+
+    cleaned: dict[str, Any] = {}
+    extra: dict[str, str] = {}
+
+    for k, v in params.items():
+        if isinstance(v, str) and "<arg_key>" in v:
+            # Everything before the first <arg_key> is the real value for this key
+            prefix_match = _re.match(r"^([^<]+?)(?:\s*<arg_key>|$)", v)
+            cleaned[k] = prefix_match.group(1).strip() if prefix_match else v
+
+            # Extract all embedded <arg_key>k</arg_key><arg_value>v</arg_value> pairs.
+            # The closing </arg_value> may be missing (truncated output), so allow EOF.
+            pairs = _re.findall(
+                r"<arg_key>([^<]+)</arg_key>\s*<arg_value>(.*?)(?:</arg_value>|$)",
+                v,
+                _re.DOTALL,
+            )
+            for ek, ev in pairs:
+                extra[ek.strip()] = ev.strip()
+        else:
+            cleaned[k] = v
+
+    # Merge extracted pairs; don't overwrite keys that already have a real value
+    for ek, ev in extra.items():
+        if ek not in cleaned or not cleaned[ek]:
+            cleaned[ek] = ev
+
+    return cleaned
+
+
+def _parse_tool_calls(llm_resp: Any) -> list["ToolCall"]:
+    """
+    Extract ToolCall objects from an LLMResponse.
+    Prefers native tool_calls; falls back to JSON-in-text parsing.
+    Sanitizes all param string values to remove LLM-generated XML noise.
+    """
+    tool_calls: list[ToolCall] = []
+    if llm_resp.tool_calls:
+        for tc in llm_resp.tool_calls:
+            if tc.get("tool_name"):
+                tool_calls.append(ToolCall(
+                    tool_name=tc["tool_name"],
+                    params=_sanitize_params(tc.get("params", {})),
+                    call_id=tc.get("call_id") or str(uuid.uuid4()),
+                ))
+    else:
+        raw_calls = _extract_tool_calls(llm_resp.text)
+        tool_calls = [
+            ToolCall(
+                tool_name=tc.tool_name,
+                params=_sanitize_params(tc.params),
+                call_id=tc.call_id,
+            )
+            for tc in raw_calls
+        ]
+    return tool_calls
+
+
 def _build_tools_instruction(tools_schema: list[dict[str, Any]]) -> str:
     """
     Build a system message that tells the LLM:
@@ -490,13 +612,19 @@ def _build_tools_instruction(tools_schema: list[dict[str, Any]]) -> str:
         "## 可用工具\n\n"
         f"{tools_json}\n\n"
         "## 工具调用规则\n\n"
-        "- 如果你需要调用工具，**只输出**如下 JSON 代码块，代码块前后不要有任何文字：\n\n"
+        "**核心原则**：当用户请求需要执行操作（文件管理、网络搜索、任务调度等），"
+        "你**必须**调用对应工具来完成，严禁凭空声称已执行或伪造操作结果。\n\n"
+        "- 调用工具时，**只输出**如下 JSON 代码块，代码块前后不要有任何文字：\n\n"
         "```json\n"
         '{"tool_calls": [{"tool_name": "工具名", "params": {参数}}]}\n'
         "```\n\n"
-        "- 需要同时调用多个工具时，在 `tool_calls` 数组中列出所有调用。\n"
-        "- 工具结果返回后，用自然语言向用户解释结果。\n"
-        "- **不需要工具时，直接用自然语言回复，不要输出 JSON。**"
+        "- **每次只调用一个工具**，等待工具执行结果后，再决定下一步操作。\n"
+        "  不得在同一次回复中批量调用多个工具。\n"
+        "- **多步骤任务严格按用户指定顺序执行**：第一步就调用第一个工具，\n"
+        "  不得跳过任何步骤，不得因某步骤需要用户确认就改变执行顺序。\n"
+        "- 工具结果返回后，用自然语言向用户解释结果，然后继续下一步（若有）。\n"
+        "- **不需要工具时，直接用自然语言回复，不要输出 JSON。**\n"
+        "- **禁止在未收到工具执行结果的情况下，自行声明操作已完成。**"
     )
 
 
