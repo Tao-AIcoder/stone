@@ -61,6 +61,7 @@ class DryRunManager:
         self,
         tool_calls: list[ToolCall],
         conv_id: str,
+        user_message: str = "",
     ) -> dict[str, Any]:
         """
         Build a structured plan dict from a list of ToolCall objects and
@@ -80,6 +81,7 @@ class DryRunManager:
             "steps": steps,
             "total_steps": len(steps),
             "created_at": datetime.utcnow().isoformat(),
+            "original_user_msg": user_message,
         }
 
         async with self._lock:

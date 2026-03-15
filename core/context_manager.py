@@ -95,14 +95,7 @@ class ContextManager:
         messages = await self.short_term.get_context(user_id, conv_id) or []
 
         messages.append({"role": "user", "content": user_msg})
-        # Dry-run previews start with "⚠️". Saving the full preview text into
-        # history causes the LLM to imitate the pattern and return plain text
-        # instead of calling tools. Replace it with a short placeholder so the
-        # turn structure stays valid without polluting the LLM's behavior.
-        if assistant_msg.startswith("⚠️"):
-            messages.append({"role": "assistant", "content": "（已生成操作预览，等待用户确认）"})
-        else:
-            messages.append({"role": "assistant", "content": assistant_msg})
+        messages.append({"role": "assistant", "content": assistant_msg})
 
         # Trim to sliding window
         if len(messages) > self.window_size * 2:

@@ -109,13 +109,21 @@ class Agent:
         self._sm.transition(ctx, AgentState.THINKING)
         await self._sm.run(ctx)
 
-        # Persist the exchange
-        await self.context_manager.save_context(
-            user_id=msg.user_id,
-            conv_id=msg.conv_id,
-            user_msg=msg.content,
-            assistant_msg=ctx.final_response or ctx.error_message,
+        # Persist the exchange — skip when a dry-run preview is pending:
+        # the history will be saved by execute_confirmed() with the original
+        # user request paired with the actual execution result, so the LLM
+        # never sees an intermediate "waiting for confirmation" turn.
+        is_dry_run_pending = (
+            ctx.final_response is not None
+            and ctx.final_response.startswith("⚠️")
         )
+        if not is_dry_run_pending:
+            await self.context_manager.save_context(
+                user_id=msg.user_id,
+                conv_id=msg.conv_id,
+                user_msg=msg.content,
+                assistant_msg=ctx.final_response or ctx.error_message,
+            )
 
         # Audit
         await self.audit_logger.log(
@@ -146,6 +154,7 @@ class Agent:
         Reconstructs tool calls from the stored plan and runs EXECUTING -> THINKING -> RESPONDING.
         """
         plan = self.dry_run_manager.get_pending_plan(conv_id)
+        original_user_msg: str = (plan or {}).get("original_user_msg", "") or "(执行操作)"
         if plan is None:
             return BotResponse(
                 conv_id=conv_id,
@@ -197,7 +206,7 @@ class Agent:
         await self.context_manager.save_context(
             user_id=user_id,
             conv_id=conv_id,
-            user_msg="(确认执行操作)",
+            user_msg=original_user_msg,
             assistant_msg=ctx.final_response or ctx.error_message,
         )
 
@@ -313,6 +322,7 @@ class Agent:
             plan = await self.dry_run_manager.generate_plan(
                 tool_calls=confirmed_calls,
                 conv_id=ctx.conv_id,
+                user_message=ctx.user_message,
             )
             ctx.dry_run_plan = plan
             preview = self.dry_run_manager.format_preview(plan)
