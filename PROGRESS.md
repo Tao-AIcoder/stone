@@ -1,11 +1,11 @@
 # 默行者 (STONE) 开发进度
 
 > 本文件供 Claude Code 追踪项目进度，每次会话开始前应先读取此文件。
-> 最后更新：2026-03-15（第五次会话）
+> 最后更新：2026-03-16（第六次会话）
 
 ---
 
-## 当前阶段：Phase 1b 代码已生成，待调测 🧪
+## 当前阶段：Phase 1b 调测完成 ✅ 663 tests passing
 
 ### 验收标准
 - [x] 在飞书上能对话 ✅（2026-03-14 验证，GLM-4-plus + Ollama fallback）
@@ -163,23 +163,30 @@
 
 | # | 任务 | 文件 | 状态 |
 |---|------|------|------|
-| 25 | 记忆遗忘曲线测试 | `tests/test_memory_forgetting.py` | ✅ 已生成 |
-| 26 | 记忆提取测试 | `tests/test_memory_extractor.py` | ✅ 已生成 |
-| 27 | MCP Client 测试 | `tests/test_mcp_client.py` | ✅ 已生成 |
-| 28 | HTTP Tool 测试 | `tests/test_http_tool.py` | ✅ 已生成 |
-| 29 | Note Tool 测试 | `tests/test_note_tool.py` | ✅ 已生成 |
-| 30 | Office Tool 测试 | `tests/test_office_tool.py` | ✅ 已生成 |
-| 31 | LocalModelManager 测试 | `tests/test_local_model_manager.py` | ✅ 已生成 |
+| 25 | 记忆遗忘曲线测试 | `tests/test_memory_forgetting.py` | ✅ 调测通过 |
+| 26 | 记忆提取测试 | `tests/test_memory_extractor.py` | ✅ 调测通过 |
+| 27 | MCP Client 测试 | `tests/test_mcp_client.py` | ✅ 调测通过 |
+| 28 | HTTP Tool 测试 | `tests/test_http_tool.py` | ✅ 调测通过 |
+| 29 | Note Tool 测试 | `tests/test_note_tool.py` | ✅ 调测通过 |
+| 30 | Office Tool 测试 | `tests/test_office_tool.py` | ✅ 调测通过 |
+| 31 | LocalModelManager 测试 | `tests/test_local_model_manager.py` | ✅ 调测通过 |
 
 ---
 
-### Phase 1b 调测计划
+### Phase 1b 调测结果（2026-03-16）
 
-**第一轮：基础设施**（MCP Client + 进程管理 + HTTP Tool + 配置加载）
-**第二轮：长期记忆**（提取 + 存储 + 遗忘曲线 + 检索注入）
-**第三轮：MCP 工具**（印象笔记 + 百度网盘 + 记忆导出）
-**第四轮：Note + Office Tool**（本地读写 + 搜索 + Office 格式）
-**第五轮：集成**（全链路飞书端到端 + 测试覆盖）
+**总计：663 tests，0 failures**
+
+修复的 Bug：
+1. `skill_registry.py`：`NoteTool()` → `NoteTool(local_backend=LocalNoteBackend())`，新增 OfficeTool 注册
+2. `test_memory_forgetting.py`：async fixture 改为 sync + `run_until_complete()`（pytest-asyncio 1.x 兼容）
+3. `memory_extractor.py`：`is_praise()` 单字仅精确匹配，防止 `'不对'` 误判为表扬
+4. `http_tool.py`：`_is_private_ip()` DNS 失败时 fail-safe 返回 True（SSRF 防护）
+5. `test_tool_search.py`：Tavily API 网络不稳定时自动 skip，不阻断 CI
+
+**待办（Phase 2 优先）：**
+- 飞书端到端集成测试（需真实环境）
+- MCP Server 真实连接测试（需 evernote/baidu_netdisk MCP 服务启动）
 
 ---
 
