@@ -11,7 +11,7 @@ import asyncio
 import logging
 import uuid
 from datetime import datetime
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any  # noqa: F401
 
 from apscheduler.schedulers.asyncio import AsyncIOScheduler  # type: ignore[import]
 from apscheduler.triggers.cron import CronTrigger  # type: ignore[import]
@@ -201,6 +201,55 @@ class Scheduler(SchedulerInterface):
             logger.exception("Scheduled task %s failed: %s", task_id, exc)
 
         await self.sqlite_store.update_scheduled_task_last_run(task_id, task.last_run)
+
+    def register_memory_tasks(self, memory_store: Any, memory_extractor: Any) -> None:
+        """
+        Register built-in system tasks for forgetting-curve decay and weekly
+        user-profile generation. Called from loader after all components are ready.
+        """
+        # Daily decay at 03:00 (all active users)
+        self._scheduler.add_job(
+            func=self._run_memory_decay,
+            trigger=CronTrigger(hour=3, minute=0, timezone="Asia/Shanghai"),
+            id="__system_memory_decay__",
+            name="记忆遗忘曲线衰减（每日）",
+            args=[memory_store],
+            replace_existing=True,
+        )
+        # Weekly profile at Sunday 04:00
+        self._scheduler.add_job(
+            func=self._run_weekly_profile,
+            trigger=CronTrigger(day_of_week="sun", hour=4, minute=0, timezone="Asia/Shanghai"),
+            id="__system_weekly_profile__",
+            name="用户画像生成（每周）",
+            args=[memory_store, memory_extractor],
+            replace_existing=True,
+        )
+        logger.info("Memory system tasks registered (daily decay + weekly profile)")
+
+    async def _run_memory_decay(self, memory_store: Any) -> None:
+        """Run forgetting-curve decay for all active users."""
+        try:
+            user_ids = await memory_store.list_active_users()
+            total = {"updated": 0, "compressed": 0, "forgotten": 0}
+            for uid in user_ids:
+                stats = await memory_store.run_decay(uid)
+                for k in total:
+                    total[k] += stats.get(k, 0)
+            logger.info("Memory decay done: %s", total)
+        except Exception as exc:
+            logger.exception("Memory decay task failed: %s", exc)
+
+    async def _run_weekly_profile(self, memory_store: Any, memory_extractor: Any) -> None:
+        """Generate weekly user profile for all active users."""
+        try:
+            user_ids = await memory_store.list_active_users()
+            for uid in user_ids:
+                profile = await memory_extractor.generate_user_profile(uid)
+                if profile:
+                    logger.info("Weekly profile generated for user %s", uid[:12])
+        except Exception as exc:
+            logger.exception("Weekly profile task failed: %s", exc)
 
     async def _restore_tasks(self) -> None:
         """Load tasks from SQLite and re-schedule them."""

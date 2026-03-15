@@ -309,6 +309,15 @@ class MemoryStore:
         logger.info("Memory decay run: %s", stats)
         return stats
 
+    async def list_active_users(self) -> list[str]:
+        """Return distinct user_ids that have at least one active memory."""
+        async with aiosqlite.connect(self._db_path) as db:
+            async with db.execute(
+                "SELECT DISTINCT user_id FROM long_term_memory WHERE active=1"
+            ) as cursor:
+                rows = await cursor.fetchall()
+        return [row[0] for row in rows]
+
     # ── Size Limit Enforcement ────────────────────────────────────────────────
 
     async def _enforce_size_limit(self, user_id: str) -> None:

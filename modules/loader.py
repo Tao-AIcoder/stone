@@ -61,6 +61,10 @@ class ModuleLoader:
         self.dry_run_manager: Any = None
         self.agent: Any = None
         self.gateway: Any = None
+        # Phase 1b: long-term memory components
+        self.memory_store: Any = None      # MemoryStore (forgetting curve)
+        self.local_model_manager: Any = None
+        self.memory_extractor: Any = None
 
         self._started = False
 
@@ -196,6 +200,56 @@ class ModuleLoader:
             "Skill registry ready (%d tools)", len(self.skill_registry.list_tools())
         )
 
+        # Step 10.5: Long-term memory system (MemoryStore + LocalModelManager + MemoryExtractor)
+        ltm_cfg = sc.get("long_term_memory", {})
+        if ltm_cfg.get("enabled", False):
+            try:
+                from modules.memory.memory_store import MemoryStore
+                from modules.memory.local_model_manager import LocalModelManager
+                from modules.memory.memory_extractor import MemoryExtractor
+                from tools.memory_tool import MemoryTool
+                from models.skill import Skill, SkillCategory
+
+                fc = ltm_cfg.get("forgetting_curve", {})
+                self.memory_store = MemoryStore(
+                    db_path="stone.db",
+                    decay_rate=fc.get("decay_rate", 0.05),
+                    compress_threshold=fc.get("compress_threshold", 0.5),
+                    forget_threshold=fc.get("forget_threshold", 0.1),
+                    reinforce_boost=fc.get("reinforce_boost", 0.2),
+                    max_size_kb=fc.get("max_size_kb", 512),
+                )
+
+                embed_cfg = sc.get("local_model", {}).get("embedding", {})
+                self.local_model_manager = LocalModelManager(
+                    model_router=self.model_router,
+                    embedding_config=embed_cfg,
+                )
+                self.memory_extractor = MemoryExtractor(
+                    local_model=self.local_model_manager,
+                    memory_store=self.memory_store,
+                )
+
+                # Register MemoryTool into skill registry
+                memory_tool = MemoryTool(
+                    memory_store=self.memory_store,
+                    extractor=self.memory_extractor,
+                )
+                self.skill_registry.register(
+                    memory_tool,
+                    Skill(
+                        name="memory_tool",
+                        display_name="长期记忆",
+                        description="管理长期记忆：记住/回忆/遗忘/列出记忆，支持显式「请记住」命令",
+                        category=SkillCategory.MEMORY,
+                        requires_confirmation=False,
+                        phase="1b",
+                    ),
+                )
+                logger.info("Long-term memory system ready (MemoryStore + MemoryExtractor + MemoryTool)")
+            except Exception as exc:
+                logger.warning("Long-term memory init failed (non-fatal): %s", exc)
+
         # Step 11: Scheduler
         logger.info("[11/14] Initializing scheduler...")
         sched_driver = (
@@ -226,10 +280,14 @@ class ModuleLoader:
             context_manager=self.context_manager,
             dry_run_manager=self.dry_run_manager,
             audit_logger=self.audit,
+            memory_extractor=self.memory_extractor,
         )
         # Wire agent into scheduler and start
         self.scheduler.agent = self.agent
         await self.scheduler.start()
+        # Register memory decay + weekly profile tasks if memory system is active
+        if self.memory_store is not None and self.memory_extractor is not None:
+            self.scheduler.register_memory_tasks(self.memory_store, self.memory_extractor)
         logger.info("Agent ready, scheduler started")
 
         # Step 14: Gateway [last]

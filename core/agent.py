@@ -60,12 +60,14 @@ class Agent:
         context_manager: "ContextManager",
         dry_run_manager: "DryRunManager",
         audit_logger: "AuditLogger",
+        memory_extractor: "Any | None" = None,
     ) -> None:
         self.model_router = model_router
         self.skill_registry = skill_registry
         self.context_manager = context_manager
         self.dry_run_manager = dry_run_manager
         self.audit_logger = audit_logger
+        self.memory_extractor = memory_extractor  # MemoryExtractor | None
 
         self._sm = StateMachine(max_iterations=100)
         self._register_handlers()
@@ -124,6 +126,16 @@ class Agent:
                 user_msg=msg.content,
                 assistant_msg=ctx.final_response or ctx.error_message,
             )
+            # Fire-and-forget memory extraction (non-blocking)
+            if self.memory_extractor is not None:
+                asyncio.ensure_future(
+                    self._extract_memory(
+                        user_id=msg.user_id,
+                        user_text=msg.content,
+                        assistant_text=ctx.final_response or "",
+                        conv_id=msg.conv_id,
+                    )
+                )
 
         # Audit
         await self.audit_logger.log(
@@ -235,6 +247,15 @@ class Agent:
                 user_msg=original_user_msg,
                 assistant_msg=ctx.final_response or ctx.error_message,
             )
+            if self.memory_extractor is not None:
+                asyncio.ensure_future(
+                    self._extract_memory(
+                        user_id=user_id,
+                        user_text=original_user_msg,
+                        assistant_text=ctx.final_response or "",
+                        conv_id=conv_id,
+                    )
+                )
 
         await self.audit_logger.log(
             level="INFO",
@@ -463,6 +484,24 @@ class Agent:
 
         # Continue reasoning
         self._sm.transition(ctx, AgentState.THINKING)
+
+    async def _extract_memory(
+        self,
+        user_id: str,
+        user_text: str,
+        assistant_text: str,
+        conv_id: str,
+    ) -> None:
+        """Background memory extraction after each completed turn."""
+        try:
+            await self.memory_extractor.extract_from_turn(
+                user_id=user_id,
+                user_text=user_text,
+                assistant_text=assistant_text,
+                conv_id=conv_id,
+            )
+        except Exception as exc:
+            logger.warning("Memory extraction failed (non-fatal): %s", exc)
 
     async def _handle_error(self, ctx: AgentContext) -> None:
         """Format error as a user-friendly response."""
