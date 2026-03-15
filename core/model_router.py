@@ -177,6 +177,41 @@ class ModelRouter(ModelRouterInterface):
 
     # ── Ollama ─────────────────────────────────────────────────────────────────
 
+    @staticmethod
+    def _normalize_messages_for_ollama(
+        messages: list[dict[str, Any]],
+    ) -> list[dict[str, Any]]:
+        """
+        Ollama ≤0.17.x fails to parse 'role: tool' messages that follow an
+        'assistant' message with 'tool_calls'. Work around by converting the
+        tool-result messages into user messages so Ollama can still see the
+        results without crashing.
+
+        Also strips the 'tool_calls' key from assistant messages that precede
+        tool results, replacing them with a plain assistant message so the
+        history remains readable without confusing Ollama's parser.
+        """
+        normalized: list[dict[str, Any]] = []
+        for msg in messages:
+            role = msg.get("role")
+            if role == "tool":
+                tool_name = msg.get("name", "tool")
+                content = msg.get("content") or ""
+                normalized.append({
+                    "role": "user",
+                    "content": f"[工具执行结果 {tool_name}]\n{content}",
+                })
+            elif role == "assistant" and "tool_calls" in msg:
+                # Keep assistant message but strip tool_calls to avoid
+                # triggering the Ollama parser bug on replay
+                normalized.append({
+                    "role": "assistant",
+                    "content": msg.get("content") or "",
+                })
+            else:
+                normalized.append(msg)
+        return normalized
+
     async def _call_ollama(
         self,
         model_id: str,
@@ -187,7 +222,7 @@ class ModelRouter(ModelRouterInterface):
         url = f"{settings.ollama_base_url.rstrip('/')}/api/chat"
         payload: dict[str, Any] = {
             "model": model_id,
-            "messages": messages,
+            "messages": self._normalize_messages_for_ollama(messages),
             "stream": False,
             "options": {"num_predict": MAX_TOKENS_DEFAULT},
         }
