@@ -49,7 +49,7 @@ class SearchTool(ToolInterface):
             import asyncio
 
             client = TavilyClient(api_key=settings.tavily_api_key)
-            loop = asyncio.get_event_loop()
+            loop = asyncio.get_running_loop()
 
             response = await asyncio.wait_for(
                 loop.run_in_executor(

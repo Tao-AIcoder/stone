@@ -50,11 +50,24 @@ class FileTool(ToolInterface):
     """
 
     name = "file_tool"
-    description = (
-        "在工作目录内进行文件操作：读取文件、写入文件、列出目录内容、创建目录。"
-        "写操作需要用户确认。工作目录外的路径一律拒绝。"
-    )
-    requires_confirmation = True  # for write operations; read ops are exempted below
+    requires_confirmation = False  # per-action check in needs_confirmation_for()
+
+    @property
+    def description(self) -> str:
+        return (
+            f"在工作目录（{settings.workspace_dir}）内进行文件操作。"
+            "action 说明：\n"
+            "- read_file：读取文件内容\n"
+            "- write_file：创建或写入文件（创建空文件时 content 传空字符串）\n"
+            "- delete_file：删除文件（需确认）\n"
+            "- list_dir：列出目录内容（path='.' 列出工作目录根）\n"
+            "- create_dir：创建目录，不要用此 action 创建文件\n"
+            "路径均相对于工作目录，不允许 '..' 越界。写操作和删除操作需要用户确认。"
+        )
+
+    def needs_confirmation_for(self, params: dict) -> bool:
+        """write_file, delete_file, create_dir need confirmation; read/list are safe."""
+        return params.get("action", "") in ("write_file", "delete_file", "create_dir")
 
     @property
     def workspace(self) -> Path:
@@ -72,6 +85,7 @@ class FileTool(ToolInterface):
         dispatch = {
             "read_file": self._read_file,
             "write_file": self._write_file,
+            "delete_file": self._delete_file,
             "list_dir": self._list_dir,
             "create_dir": self._create_dir,
         }
@@ -150,10 +164,38 @@ class FileTool(ToolInterface):
             metadata={"path": str(target)},
         )
 
+    # ── Delete File ───────────────────────────────────────────────────────────
+
+    async def _delete_file(self, params: dict[str, Any], user_id: str) -> ToolResult:
+        path_str: str = params.get("path", "")
+        if not path_str:
+            return ToolResult.fail("缺少参数 'path'")
+
+        target = _resolve_safe(self.workspace, path_str)
+
+        if not target.exists():
+            return ToolResult.fail(f"文件不存在：{path_str}")
+        if target.is_dir():
+            return ToolResult.fail(f"{path_str!r} 是目录，无法用 delete_file 删除")
+
+        try:
+            target.unlink()
+        except PermissionError as exc:
+            raise ToolError(message=f"权限拒绝：{exc}", tool_name=self.name) from exc
+        except OSError as exc:
+            raise ToolError(message=f"删除失败：{exc}", tool_name=self.name) from exc
+
+        logger.info("FileTool.delete [user=%s]: %s", user_id, path_str)
+        return ToolResult.ok(
+            output=f"文件已删除：{path_str}",
+            metadata={"path": str(target)},
+        )
+
     # ── List Dir ──────────────────────────────────────────────────────────────
 
     async def _list_dir(self, params: dict[str, Any], user_id: str) -> ToolResult:
         path_str: str = params.get("path", ".")
+        show_hidden: bool = params.get("show_hidden", False)
         target = _resolve_safe(self.workspace, path_str)
 
         if not target.exists():
@@ -162,27 +204,38 @@ class FileTool(ToolInterface):
             return ToolResult.fail(f"{path_str!r} 不是目录")
 
         try:
-            entries = sorted(target.iterdir(), key=lambda p: (p.is_file(), p.name))
+            all_entries = list(target.iterdir())
         except PermissionError as exc:
             raise ToolError(message=f"权限拒绝：{exc}", tool_name=self.name) from exc
 
-        lines: list[str] = [f"目录列表：{path_str}\n"]
-        for entry in entries[:MAX_LIST_ENTRIES]:
-            icon = "📄" if entry.is_file() else "📁"
-            size_info = ""
-            if entry.is_file():
-                try:
-                    size_info = f" ({entry.stat().st_size} bytes)"
-                except OSError:
-                    pass
-            lines.append(f"{icon} {entry.name}{size_info}")
+        # Filter hidden files unless explicitly requested
+        if not show_hidden:
+            all_entries = [e for e in all_entries if not e.name.startswith(".")]
 
-        if len(list(target.iterdir())) > MAX_LIST_ENTRIES:
+        # Dirs first (alphabetical), then files (alphabetical)
+        dirs = sorted([e for e in all_entries if e.is_dir()], key=lambda p: p.name)
+        files = sorted([e for e in all_entries if e.is_file()], key=lambda p: p.name)
+        entries = (dirs + files)[:MAX_LIST_ENTRIES]
+
+        lines: list[str] = [f"📂 {path_str}  （{len(dirs)} 个目录，{len(files)} 个文件）\n"]
+        if dirs:
+            for d in dirs:
+                lines.append(f"📁 {d.name}/")
+        if files:
+            for f in files:
+                try:
+                    size = f.stat().st_size
+                    size_info = f" ({size:,} bytes)" if size > 0 else " (空)"
+                except OSError:
+                    size_info = ""
+                lines.append(f"📄 {f.name}{size_info}")
+
+        if len(all_entries) > MAX_LIST_ENTRIES:
             lines.append(f"\n（仅显示前 {MAX_LIST_ENTRIES} 个条目）")
 
         return ToolResult.ok(
             output="\n".join(lines),
-            metadata={"path": str(target), "entry_count": len(lines) - 1},
+            metadata={"path": str(target), "dir_count": len(dirs), "file_count": len(files)},
         )
 
     # ── Create Dir ────────────────────────────────────────────────────────────
@@ -216,8 +269,15 @@ class FileTool(ToolInterface):
                 "properties": {
                     "action": {
                         "type": "string",
-                        "enum": ["read_file", "write_file", "list_dir", "create_dir"],
-                        "description": "要执行的文件操作类型",
+                        "enum": ["read_file", "write_file", "delete_file", "list_dir", "create_dir"],
+                        "description": (
+                            "要执行的文件操作：\n"
+                            "- read_file: 读取文件内容\n"
+                            "- write_file: 创建或写入文件（创建空文件时 content 传 ''，会自动创建父目录）\n"
+                            "- delete_file: 删除文件（需用户确认）\n"
+                            "- list_dir: 列出目录内容，path='.' 列出工作目录根\n"
+                            "- create_dir: 创建目录（不是文件！创建文件请用 write_file）"
+                        ),
                     },
                     "path": {
                         "type": "string",
@@ -225,7 +285,7 @@ class FileTool(ToolInterface):
                     },
                     "content": {
                         "type": "string",
-                        "description": "write_file 时的文件内容",
+                        "description": "write_file 时的文件内容，未指定时传空字符串",
                     },
                     "overwrite": {
                         "type": "boolean",

@@ -114,8 +114,12 @@ async def get_history(
 ) -> dict[str, Any]:
     """
     Retrieve the message history for a conversation.
+    Requires the user_id to be on the admin whitelist.
     """
     loader = _get_loader(request)
+
+    if not loader.auth.verify_user(user_id):
+        raise HTTPException(status_code=403, detail="User not authorized")
 
     try:
         messages = await loader.sqlite_store.get_conversation_messages(

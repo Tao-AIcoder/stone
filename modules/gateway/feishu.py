@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import threading
 import time
 from collections import defaultdict, deque
 from typing import TYPE_CHECKING, Any
@@ -39,6 +40,10 @@ RECONNECT_MAX_FAILURES = 5
 # Long-task threshold: reply immediately if processing takes more than this
 LONG_TASK_THRESHOLD = 2.0  # seconds
 
+# Keywords for dry-run confirmation / cancellation
+_CONFIRM_WORDS = {"确认", "confirm", "/confirm", "是", "好的", "确定", "执行", "ok", "OK", "好"}
+_CANCEL_WORDS = {"取消", "cancel", "/cancel", "否", "不", "算了", "不要", "放弃"}
+
 
 class FeishuGateway(GatewayInterface):
     """
@@ -67,6 +72,8 @@ class FeishuGateway(GatewayInterface):
         self._running = False
         self._reconnect_failures = 0
         self._reconnect_delay = RECONNECT_BASE
+        # Serialize WS thread creation to prevent race on lark_oapi.ws.client.loop
+        self._ws_lock = threading.Lock()
 
     # ── Lifecycle ─────────────────────────────────────────────────────────────
 
@@ -127,24 +134,25 @@ class FeishuGateway(GatewayInterface):
                 pass
         logger.info("FeishuGateway stopped")
 
+    def is_running(self) -> bool:
+        return self._running
+
+    async def send_message(self, user_id: str, content: str) -> None:
+        await self.send_reply(receive_id=user_id, content=content)
+
     # ── Connection ────────────────────────────────────────────────────────────
 
     async def _connect_and_run(self) -> None:
         """Establish WebSocket connection and start event listening."""
         try:
             import lark_oapi as lark  # type: ignore[import]
-            from lark_oapi.api.im.v1 import (  # type: ignore[import]
-                CreateMessageRequest,
-                CreateMessageRequestBody,
-                ReplyMessageRequest,
-                ReplyMessageRequestBody,
-            )
         except ImportError as exc:
             raise StoneError(
                 message="lark-oapi SDK 未安装，无法启动 Feishu 网关",
                 code="IMPORT_ERROR",
             ) from exc
 
+        # Build the HTTP client for sending messages (safe to create here)
         self._lark = lark
         self._client = lark.Client.builder() \
             .app_id(settings.feishu_app_id) \
@@ -152,23 +160,61 @@ class FeishuGateway(GatewayInterface):
             .log_level(lark.LogLevel.WARNING) \
             .build()
 
-        event_handler = (
-            lark.EventDispatcherHandler.builder("", "")
-            .register_p2_im_message_receive_v1(self._on_message_receive)
-            .build()
-        )
-
-        self._ws_client = lark.ws.Client(
-            settings.feishu_app_id,
-            settings.feishu_app_secret,
-            event_handler=event_handler,
-            log_level=lark.LogLevel.WARNING,
-        )
-
         logger.info("FeishuGateway: connecting to Feishu WebSocket...")
-        await asyncio.get_event_loop().run_in_executor(
-            None, self._ws_client.start
-        )
+        exc_holder: list[Exception] = []
+        # Capture uvicorn's event loop so WS thread callbacks can schedule work on it
+        main_loop = asyncio.get_event_loop()
+
+        def _run_in_thread() -> None:
+            # ws.Client and its asyncio.Lock must be created inside this thread
+            # so they bind to new_loop, not uvicorn's loop.
+            # Hold _ws_lock for the entire lifetime of this connection to prevent
+            # concurrent threads from overwriting lark_oapi.ws.client.loop.
+            import lark_oapi as _lark
+            import lark_oapi.ws.client as _lark_ws
+
+            new_loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(new_loop)
+
+            with self._ws_lock:
+                _lark_ws.loop = new_loop
+
+                # lark_oapi calls handlers synchronously from the WS thread.
+                # Fire-and-forget onto uvicorn's event loop — do NOT block
+                # here, otherwise the WS loop can't send pings and Feishu
+                # will consider the connection dead during LLM inference.
+                def _sync_on_message(data: Any) -> None:
+                    asyncio.run_coroutine_threadsafe(
+                        self._on_message_receive(data), main_loop
+                    )
+
+                event_handler = (
+                    _lark.EventDispatcherHandler.builder("", "")
+                    .register_p2_im_message_receive_v1(_sync_on_message)
+                    .build()
+                )
+                ws_client = _lark.ws.Client(
+                    settings.feishu_app_id,
+                    settings.feishu_app_secret,
+                    event_handler=event_handler,
+                    log_level=_lark.LogLevel.INFO,
+                )
+                self._ws_client = ws_client
+                try:
+                    ws_client.start()
+                except Exception as e:
+                    exc_holder.append(e)
+                finally:
+                    new_loop.close()
+
+        t = threading.Thread(target=_run_in_thread, daemon=True)
+        t.start()
+        # Use run_in_executor so the uvicorn event loop is not blocked
+        # while the WS thread is running.
+        loop = asyncio.get_event_loop()
+        await loop.run_in_executor(None, t.join)
+        if exc_holder:
+            raise exc_holder[0]
 
     # ── Event Handler ─────────────────────────────────────────────────────────
 
@@ -236,6 +282,21 @@ class FeishuGateway(GatewayInterface):
                     await self.send_reply(chat_id, message_id, response)
                 return
 
+            # ── Dry-run confirmation / cancellation ───────────────────────
+            if self.agent.dry_run_manager.has_pending(chat_id):
+                stripped = text_content.strip()
+                if stripped in _CONFIRM_WORDS:
+                    bot_response = await self.agent.execute_confirmed(chat_id, open_id)
+                    await self.send_reply(chat_id, message_id, bot_response.content)
+                    return
+                if stripped in _CANCEL_WORDS:
+                    try:
+                        await self.agent.dry_run_manager.cancel(chat_id, open_id)
+                    except Exception:
+                        pass
+                    await self.send_reply(chat_id, message_id, "已取消操作。")
+                    return
+
             # ── Prompt guard ──────────────────────────────────────────────
             try:
                 safe_content = self.prompt_guard.wrap_untrusted(
@@ -263,6 +324,7 @@ class FeishuGateway(GatewayInterface):
 
             # ── Build UserMessage ─────────────────────────────────────────
             user_msg = UserMessage(
+                conv_id=chat_id,          # stable per Feishu chat, enables dry-run resumption
                 user_id=open_id,
                 open_id=open_id,
                 message_type=MessageType.TEXT,
@@ -318,34 +380,43 @@ class FeishuGateway(GatewayInterface):
         try:
             import lark_oapi as lark  # type: ignore[import]
             from lark_oapi.api.im.v1 import (  # type: ignore[import]
-                ReplyMessageRequest,
-                ReplyMessageRequestBody,
+                CreateMessageRequest,
+                CreateMessageRequestBody,
             )
 
+            # Use CreateMessage to chat_id so the reply appears as a new
+            # message in the conversation, not as a collapsed thread reply.
             body = (
-                ReplyMessageRequestBody.builder()
+                CreateMessageRequestBody.builder()
+                .receive_id(chat_id)
                 .content(_json.dumps({"text": content}, ensure_ascii=False))
                 .msg_type("text")
                 .build()
             )
             req = (
-                ReplyMessageRequest.builder()
-                .message_id(message_id)
+                CreateMessageRequest.builder()
+                .receive_id_type("chat_id")
                 .request_body(body)
                 .build()
             )
 
             loop = asyncio.get_event_loop()
+            logger.info(
+                "FeishuGateway: sending message to chat_id=%s",
+                chat_id[:12] + "***" if chat_id else "(empty)",
+            )
             resp = await loop.run_in_executor(
-                None, lambda: self._client.im.v1.message.reply(req)
+                None, lambda: self._client.im.v1.message.create(req)
             )
 
             if not resp.success():
                 logger.warning(
-                    "FeishuGateway: reply failed code=%s msg=%s",
+                    "FeishuGateway: send failed code=%s msg=%s",
                     resp.code,
                     resp.msg,
                 )
+            else:
+                logger.info("FeishuGateway: message sent OK")
         except Exception as exc:
             logger.error("FeishuGateway: send_reply failed: %s", exc)
 

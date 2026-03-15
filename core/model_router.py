@@ -8,7 +8,9 @@ Implements fallback logic when the primary model fails.
 
 from __future__ import annotations
 
+import json
 import logging
+from dataclasses import dataclass, field
 from typing import Any
 
 import httpx
@@ -18,6 +20,15 @@ from models.errors import ModelError, ModelQuotaError, ModelTimeoutError
 from modules.interfaces.model_router import ModelRouterInterface
 
 logger = logging.getLogger(__name__)
+
+
+@dataclass
+class LLMResponse:
+    """Unified response from any LLM backend."""
+    text: str = ""
+    # Parsed tool calls: list of {"tool_name": str, "params": dict, "call_id": str}
+    tool_calls: list[dict[str, Any]] = field(default_factory=list)
+
 
 # ── Constants ─────────────────────────────────────────────────────────────────
 
@@ -102,9 +113,11 @@ class ModelRouter(ModelRouterInterface):
         user_id: str = "default_user",
         privacy_sensitive: bool = False,
         model_override: str | None = None,
-    ) -> str:
+        tools: list[dict[str, Any]] | None = None,
+    ) -> LLMResponse:
         """
-        Route the chat request to the best-fit model and return the response text.
+        Route the chat request to the best-fit model.
+        Returns LLMResponse with .text and .tool_calls (native function calling).
         Falls back to local model if the primary model fails.
         """
         privacy_mode = settings.privacy_mode
@@ -126,7 +139,7 @@ class ModelRouter(ModelRouterInterface):
         )
 
         try:
-            return await self._call_model(primary, messages)
+            return await self._call_model(primary, messages, tools=tools)
         except (ModelTimeoutError, ModelQuotaError, ModelError) as exc:
             logger.warning(
                 "Primary model %s failed (%s), falling back to local",
@@ -136,7 +149,7 @@ class ModelRouter(ModelRouterInterface):
             if primary == MODEL_LOCAL:
                 raise  # no further fallback
             try:
-                return await self._call_model(MODEL_LOCAL, messages)
+                return await self._call_model(MODEL_LOCAL, messages, tools=tools)
             except Exception as fallback_exc:
                 logger.error("Fallback to local model also failed: %s", fallback_exc)
                 raise ModelError(
@@ -146,37 +159,48 @@ class ModelRouter(ModelRouterInterface):
 
     # ── Backend Dispatchers ────────────────────────────────────────────────────
 
-    async def _call_model(self, model_id: str, messages: list[dict[str, Any]]) -> str:
+    async def _call_model(
+        self,
+        model_id: str,
+        messages: list[dict[str, Any]],
+        tools: list[dict[str, Any]] | None = None,
+    ) -> LLMResponse:
         if model_id == MODEL_LOCAL or "ollama" in model_id.lower():
-            return await self._call_ollama(model_id, messages)
+            return await self._call_ollama(model_id, messages, tools=tools)
         if model_id.startswith("glm"):
-            return await self._call_zhipuai(model_id, messages)
+            return await self._call_zhipuai(model_id, messages, tools=tools)
         if model_id.startswith("qwen"):
             return await self._call_dashscope(model_id, messages)
         # Unknown model – try ollama as generic fallback
         logger.warning("Unknown model_id %r, attempting via Ollama", model_id)
-        return await self._call_ollama(model_id, messages)
+        return await self._call_ollama(model_id, messages, tools=tools)
 
     # ── Ollama ─────────────────────────────────────────────────────────────────
 
-    async def _call_ollama(self, model_id: str, messages: list[dict[str, Any]]) -> str:
+    async def _call_ollama(
+        self,
+        model_id: str,
+        messages: list[dict[str, Any]],
+        tools: list[dict[str, Any]] | None = None,
+    ) -> LLMResponse:
         client = await self._get_http()
         url = f"{settings.ollama_base_url.rstrip('/')}/api/chat"
-        payload = {
+        payload: dict[str, Any] = {
             "model": model_id,
             "messages": messages,
             "stream": False,
             "options": {"num_predict": MAX_TOKENS_DEFAULT},
         }
+        if tools:
+            # Ollama uses OpenAI-compatible tools format
+            payload["tools"] = [{"type": "function", "function": t} for t in tools]
+
         try:
             resp = await client.post(url, json=payload, timeout=OLLAMA_TIMEOUT)
         except httpx.TimeoutException as exc:
             raise ModelTimeoutError(model_id=model_id, timeout_seconds=OLLAMA_TIMEOUT) from exc
         except httpx.RequestError as exc:
-            raise ModelError(
-                message=f"Ollama 连接失败：{exc}",
-                model_id=model_id,
-            ) from exc
+            raise ModelError(message=f"Ollama 连接失败：{exc}", model_id=model_id) from exc
 
         if resp.status_code != 200:
             raise ModelError(
@@ -185,14 +209,40 @@ class ModelRouter(ModelRouterInterface):
             )
 
         data = resp.json()
-        content: str = data.get("message", {}).get("content", "")
-        if not content:
+        msg = data.get("message", {})
+        content: str = msg.get("content", "") or ""
+
+        # Extract native tool calls if present
+        native_calls = msg.get("tool_calls", []) or []
+        parsed_calls = []
+        for tc in native_calls:
+            fn = tc.get("function", {})
+            raw_args = fn.get("arguments", {})
+            if isinstance(raw_args, str):
+                try:
+                    raw_args = json.loads(raw_args)
+                except json.JSONDecodeError:
+                    raw_args = {}
+            parsed_calls.append({
+                "tool_name": fn.get("name", ""),
+                "params": raw_args,
+                "call_id": tc.get("id", ""),
+            })
+
+        if not content and not parsed_calls:
             raise ModelError(message="Ollama 返回空内容", model_id=model_id)
-        return content
+
+        logger.debug("Ollama response text=%r tool_calls=%s", content[:100], parsed_calls)
+        return LLMResponse(text=content, tool_calls=parsed_calls)
 
     # ── 智谱 GLM ──────────────────────────────────────────────────────────────
 
-    async def _call_zhipuai(self, model_id: str, messages: list[dict[str, Any]]) -> str:
+    async def _call_zhipuai(
+        self,
+        model_id: str,
+        messages: list[dict[str, Any]],
+        tools: list[dict[str, Any]] | None = None,
+    ) -> LLMResponse:
         if not settings.zhipuai_api_key:
             raise ModelError(message="ZHIPUAI_API_KEY 未配置", model_id=model_id)
         try:
@@ -201,34 +251,50 @@ class ModelRouter(ModelRouterInterface):
             raise ModelError(message="zhipuai SDK 未安装", model_id=model_id) from exc
 
         try:
-            client = ZhipuAI(api_key=settings.zhipuai_api_key)
-            # The zhipuai SDK is synchronous; run in thread pool to avoid blocking
             import asyncio
-            loop = asyncio.get_event_loop()
+            client = ZhipuAI(api_key=settings.zhipuai_api_key)
+            oai_tools = [{"type": "function", "function": t} for t in tools] if tools else None
+            loop = asyncio.get_running_loop()
             response = await loop.run_in_executor(
                 None,
                 lambda: client.chat.completions.create(
                     model=model_id,
                     messages=messages,
                     max_tokens=MAX_TOKENS_DEFAULT,
+                    tools=oai_tools,
+                    tool_choice="auto" if oai_tools else None,
                 ),
             )
-            content = response.choices[0].message.content
-            return content or ""
+            msg = response.choices[0].message
+            content: str = msg.content or ""
+
+            # Extract native tool calls
+            parsed_calls = []
+            if msg.tool_calls:
+                for tc in msg.tool_calls:
+                    try:
+                        params = json.loads(tc.function.arguments)
+                    except (json.JSONDecodeError, AttributeError):
+                        params = {}
+                    parsed_calls.append({
+                        "tool_name": tc.function.name,
+                        "params": params,
+                        "call_id": tc.id or "",
+                    })
+
+            logger.debug("ZhipuAI response text=%r tool_calls=%s", content[:100], parsed_calls)
+            return LLMResponse(text=content, tool_calls=parsed_calls)
         except Exception as exc:
             err_str = str(exc).lower()
             if "quota" in err_str or "limit" in err_str or "1302" in err_str:
                 raise ModelQuotaError(model_id=model_id) from exc
             if "timeout" in err_str:
                 raise ModelTimeoutError(model_id=model_id, timeout_seconds=CLOUD_TIMEOUT) from exc
-            raise ModelError(
-                message=f"智谱 API 错误：{exc}",
-                model_id=model_id,
-            ) from exc
+            raise ModelError(message=f"智谱 API 错误：{exc}", model_id=model_id) from exc
 
     # ── 阿里云通义 (DashScope) ────────────────────────────────────────────────
 
-    async def _call_dashscope(self, model_id: str, messages: list[dict[str, Any]]) -> str:
+    async def _call_dashscope(self, model_id: str, messages: list[dict[str, Any]]) -> LLMResponse:
         if not settings.dashscope_api_key:
             raise ModelError(message="DASHSCOPE_API_KEY 未配置", model_id=model_id)
         try:
@@ -241,7 +307,7 @@ class ModelRouter(ModelRouterInterface):
 
         try:
             import asyncio
-            loop = asyncio.get_event_loop()
+            loop = asyncio.get_running_loop()
             response = await loop.run_in_executor(
                 None,
                 lambda: Generation.call(
@@ -259,7 +325,7 @@ class ModelRouter(ModelRouterInterface):
                     model_id=model_id,
                 )
             content = response.output.choices[0].message.content
-            return content or ""
+            return LLMResponse(text=content or "")
         except (ModelError, ModelQuotaError):
             raise
         except Exception as exc:

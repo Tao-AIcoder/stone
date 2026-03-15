@@ -87,10 +87,15 @@ class BashTool(ToolInterface):
     """
 
     name = "bash_tool"
-    description = (
-        "在服务器上执行安全的系统命令。仅支持白名单命令（ls, cat, grep, find 等）。"
-        "不支持写操作、网络命令或危险命令。"
-    )
+    @property
+    def description(self) -> str:
+        from config import settings
+        return (
+            f"执行安全的系统命令（运行目录：{settings.workspace_dir}）。"
+            "适用场景：grep 搜索文件内容、find 查找文件、wc 统计行数、date/df/du 系统信息等。"
+            "【列目录和读写文件请用 file_tool，不要用 bash_tool 代替】。"
+            "仅支持白名单命令，不支持写操作、网络命令或危险命令。"
+        )
     requires_confirmation = False  # safe commands; set per-call based on analysis
 
     async def execute(
@@ -129,10 +134,12 @@ class BashTool(ToolInterface):
         logger.info("BashTool: executing [user=%s]: %r", user_id, command)
 
         try:
+            from config import settings
             proc = await asyncio.create_subprocess_shell(
                 command,
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
+                cwd=str(settings.workspace_dir),
             )
             try:
                 stdout, stderr = await asyncio.wait_for(
@@ -188,7 +195,7 @@ class BashTool(ToolInterface):
                     "command": {
                         "type": "string",
                         "description": (
-                            "要执行的 shell 命令。仅支持白名单命令："
+                            "要执行的 shell 命令，在工作目录下执行。仅支持白名单命令："
                             + ", ".join(sorted(SAFE_COMMANDS))
                         ),
                     }

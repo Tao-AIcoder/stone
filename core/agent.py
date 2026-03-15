@@ -9,10 +9,11 @@ from __future__ import annotations
 
 import json
 import logging
+import uuid
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
-from models.agent_state import AgentContext, AgentState, ToolCall, ToolResult
+from models.agent_state import AgentContext, AgentState, ToolCall, ToolResult, VALID_TRANSITIONS
 from models.errors import (
     DryRunRejectedError,
     InvalidStateTransition,
@@ -135,6 +136,82 @@ class Agent:
         )
         return response
 
+    async def execute_confirmed(self, conv_id: str, user_id: str) -> BotResponse:
+        """
+        Resume execution after user confirmed a dry-run plan via chat.
+        Reconstructs tool calls from the stored plan and runs EXECUTING -> THINKING -> RESPONDING.
+        """
+        plan = self.dry_run_manager.get_pending_plan(conv_id)
+        if plan is None:
+            return BotResponse(
+                conv_id=conv_id,
+                user_id=user_id,
+                content="没有找到待确认的操作，可能已超时或已处理。",
+            )
+
+        # Reconstruct ToolCall objects from the plan steps
+        tool_calls = [
+            ToolCall(
+                tool_name=step["tool"],
+                params=step.get("params", {}),
+                call_id=step.get("call_id", str(uuid.uuid4())),
+            )
+            for step in plan.get("steps", [])
+        ]
+
+        await self.dry_run_manager.confirm(conv_id, user_id)
+
+        # Build context — go IDLE -> EXECUTING, skip THINKING entirely to avoid
+        # the LLM re-generating tool calls and triggering another dry-run cycle.
+        ctx = AgentContext(
+            conv_id=conv_id,
+            user_id=user_id,
+            user_message="(用户已确认操作)",
+            state=AgentState.IDLE,
+            pending_tool_calls=tool_calls,
+            dry_run_confirmed=True,
+        )
+
+        history = await self.context_manager.get_context(user_id, conv_id)
+        persona = _load_persona()
+        ctx.messages = [{"role": "system", "content": persona}] + history
+
+        ctx.state = AgentState.EXECUTING  # bypass state machine validation
+        await self._handle_executing(ctx)
+        # State is now THINKING — do NOT continue into the state machine.
+        # Format the response directly from tool results so the LLM cannot
+        # re-trigger another dry-run by producing a new tool call JSON.
+        parts = []
+        for r in ctx.tool_results:
+            if r.success:
+                parts.append(f"✅ {r.output}")
+            else:
+                parts.append(f"❌ {r.tool_name} 失败：{r.error}")
+        ctx.final_response = "\n".join(parts) if parts else "操作已执行完毕。"
+        ctx.state = AgentState.IDLE
+
+        await self.context_manager.save_context(
+            user_id=user_id,
+            conv_id=conv_id,
+            user_msg="(确认执行操作)",
+            assistant_msg=ctx.final_response or ctx.error_message,
+        )
+
+        await self.audit_logger.log(
+            level="INFO",
+            action="dry_run_execute_confirmed",
+            user_id=user_id,
+            detail={"conv_id": conv_id, "tools": [c.tool_name for c in tool_calls]},
+            result="success" if not ctx.error_message else "failure",
+        )
+
+        return BotResponse(
+            conv_id=ctx.conv_id,
+            user_id=ctx.user_id,
+            content=self._sm.build_response(ctx),
+            tools_used=[r.tool_name for r in ctx.tool_results],
+        )
+
     # ── State Handlers ────────────────────────────────────────────────────────
 
     async def _handle_thinking(self, ctx: AgentContext) -> None:
@@ -145,24 +222,57 @@ class Agent:
         """
         tools_schema = self.skill_registry.get_tools_schema()
 
-        llm_response = await self.model_router.chat(
+        llm_resp = await self.model_router.chat(
             messages=ctx.messages,
             task_type=ctx.task_type,
             user_id=ctx.user_id,
             privacy_sensitive=ctx.privacy_sensitive,
+            tools=tools_schema or None,
         )
 
-        # Attempt to parse tool calls from the response
-        tool_calls = _extract_tool_calls(llm_response)
+        logger.debug("LLM response [conv=%s] text=%r tool_calls=%s",
+                     ctx.conv_id, llm_resp.text[:200], llm_resp.tool_calls)
+
+        # Build ToolCall objects — prefer native tool calls, fall back to JSON-in-text
+        tool_calls: list[ToolCall] = []
+        if llm_resp.tool_calls:
+            for tc in llm_resp.tool_calls:
+                if tc.get("tool_name"):
+                    tool_calls.append(ToolCall(
+                        tool_name=tc["tool_name"],
+                        params=tc.get("params", {}),
+                        call_id=tc.get("call_id") or str(uuid.uuid4()),
+                    ))
+            logger.info("Native tool_calls [conv=%s]: %s", ctx.conv_id,
+                        [(c.tool_name, c.params) for c in tool_calls])
+        else:
+            tool_calls = _extract_tool_calls(llm_resp.text)
+            if tool_calls:
+                logger.info("Text-parsed tool_calls [conv=%s]: %s", ctx.conv_id,
+                            [(c.tool_name, c.params) for c in tool_calls])
+
+        # Build the assistant message for history with proper tool_calls structure
+        assistant_msg: dict[str, Any] = {"role": "assistant", "content": llm_resp.text}
+        if llm_resp.tool_calls:
+            assistant_msg["tool_calls"] = [
+                {
+                    "id": tc.get("call_id", ""),
+                    "type": "function",
+                    "function": {
+                        "name": tc["tool_name"],
+                        "arguments": json.dumps(tc.get("params", {}), ensure_ascii=False),
+                    },
+                }
+                for tc in llm_resp.tool_calls
+            ]
 
         if tool_calls and ctx.tool_iteration < ctx.max_tool_iterations:
             ctx.pending_tool_calls = tool_calls
-            # Add assistant message (raw) to history
-            ctx.messages.append({"role": "assistant", "content": llm_response})
+            ctx.messages.append(assistant_msg)
             self._sm.transition(ctx, AgentState.TOOL_SELECTING)
         else:
-            ctx.final_response = llm_response
-            ctx.messages.append({"role": "assistant", "content": llm_response})
+            ctx.final_response = llm_resp.text
+            ctx.messages.append(assistant_msg)
             self._sm.transition(ctx, AgentState.RESPONDING)
 
     async def _handle_tool_selecting(self, ctx: AgentContext) -> None:
@@ -180,7 +290,9 @@ class Agent:
                 logger.warning("Tool %r not found, skipping", call.tool_name)
                 continue
             confirmed_calls.append(call)
-            if tool.requires_confirmation and settings.dry_run_enabled:
+            tool_instance = self.skill_registry.get_tool_instance(call.tool_name)
+            if (tool_instance and tool_instance.needs_confirmation_for(call.params)
+                    and settings.dry_run_enabled):
                 needs_dry_run = True
 
         ctx.pending_tool_calls = confirmed_calls
@@ -349,6 +461,27 @@ def _extract_tool_calls(text: str) -> list[ToolCall]:
         pass
 
     return []
+
+
+def _build_tools_instruction(tools_schema: list[dict[str, Any]]) -> str:
+    """
+    Build a system message that tells the LLM:
+    1. What tools are available (with their schemas)
+    2. The exact JSON format to use when invoking them
+    """
+    tools_json = json.dumps(tools_schema, ensure_ascii=False, indent=2)
+    return (
+        "## 可用工具\n\n"
+        f"{tools_json}\n\n"
+        "## 工具调用规则\n\n"
+        "- 如果你需要调用工具，**只输出**如下 JSON 代码块，代码块前后不要有任何文字：\n\n"
+        "```json\n"
+        '{"tool_calls": [{"tool_name": "工具名", "params": {参数}}]}\n'
+        "```\n\n"
+        "- 需要同时调用多个工具时，在 `tool_calls` 数组中列出所有调用。\n"
+        "- 工具结果返回后，用自然语言向用户解释结果。\n"
+        "- **不需要工具时，直接用自然语言回复，不要输出 JSON。**"
+    )
 
 
 def _safe_params(params: dict[str, Any]) -> dict[str, Any]:

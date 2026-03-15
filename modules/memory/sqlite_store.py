@@ -432,6 +432,20 @@ class SQLiteStore(LongTermMemoryInterface):
         )
         await self.db.commit()
 
+    # ── Interface aliases (LongTermMemoryInterface compat) ────────────────────
+
+    async def create_conversation(self, conv_id: str, user_id: str) -> None:
+        await self.save_conversation(conv_id=conv_id, user_id=user_id)
+
+    async def save_task(self, task: Any) -> None:
+        await self.save_scheduled_task(task)
+
+    async def get_tasks(self, user_id: str) -> list[Any]:
+        return await self.get_all_scheduled_tasks()
+
+    async def delete_task(self, task_id: str) -> None:
+        await self.delete_scheduled_task(task_id)
+
 
 # ── Row converters ────────────────────────────────────────────────────────────
 

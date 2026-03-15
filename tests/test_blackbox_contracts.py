@@ -177,11 +177,11 @@ class TestMemoryContract:
 
 class TestHistoryContract:
     def test_messages_field_present(self, client):
-        data = client.get("/api/conversations/any-id/history", headers=USER).json()
+        data = client.get("/api/conversations/any-id/history", headers=USER, params={"user_id": "open_id_admin"}).json()
         assert "messages" in data
 
     def test_messages_is_list(self, client):
         assert isinstance(
-            client.get("/api/conversations/any-id/history", headers=USER).json()["messages"],
+            client.get("/api/conversations/any-id/history", headers=USER, params={"user_id": "open_id_admin"}).json()["messages"],
             list
         )

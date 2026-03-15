@@ -178,40 +178,40 @@ class TestChatDryRun:
 class TestConversationHistory:
     def test_returns_200(self, client: TestClient) -> None:
         conv_id = str(uuid.uuid4())
-        resp = client.get(f"/api/conversations/{conv_id}/history")
+        resp = client.get(f"/api/conversations/{conv_id}/history", params={"user_id": "open_id_admin"})
         assert resp.status_code == 200
 
     def test_response_has_conv_id(self, client: TestClient) -> None:
         conv_id = str(uuid.uuid4())
-        data = client.get(f"/api/conversations/{conv_id}/history").json()
+        data = client.get(f"/api/conversations/{conv_id}/history", params={"user_id": "open_id_admin"}).json()
         assert data["conv_id"] == conv_id
 
     def test_response_has_messages_list(self, client: TestClient) -> None:
         conv_id = str(uuid.uuid4())
-        data = client.get(f"/api/conversations/{conv_id}/history").json()
+        data = client.get(f"/api/conversations/{conv_id}/history", params={"user_id": "open_id_admin"}).json()
         assert "messages" in data
         assert isinstance(data["messages"], list)
 
     def test_response_has_total_field(self, client: TestClient) -> None:
         conv_id = str(uuid.uuid4())
-        data = client.get(f"/api/conversations/{conv_id}/history").json()
+        data = client.get(f"/api/conversations/{conv_id}/history", params={"user_id": "open_id_admin"}).json()
         assert "total" in data
         assert isinstance(data["total"], int)
 
     def test_empty_history_returns_zero_total(self, client: TestClient) -> None:
         conv_id = str(uuid.uuid4())
-        data = client.get(f"/api/conversations/{conv_id}/history").json()
+        data = client.get(f"/api/conversations/{conv_id}/history", params={"user_id": "open_id_admin"}).json()
         assert data["total"] == 0
         assert data["messages"] == []
 
     def test_limit_param_accepted(self, client: TestClient) -> None:
         conv_id = str(uuid.uuid4())
-        resp = client.get(f"/api/conversations/{conv_id}/history?limit=10")
+        resp = client.get(f"/api/conversations/{conv_id}/history", params={"user_id": "open_id_admin", "limit": "10"})
         assert resp.status_code == 200
 
     def test_offset_param_accepted(self, client: TestClient) -> None:
         conv_id = str(uuid.uuid4())
-        resp = client.get(f"/api/conversations/{conv_id}/history?offset=5")
+        resp = client.get(f"/api/conversations/{conv_id}/history", params={"user_id": "open_id_admin", "offset": "5"})
         assert resp.status_code == 200
 
     def test_sqlite_error_returns_500(self, loader: MagicMock) -> None:
@@ -220,7 +220,7 @@ class TestConversationHistory:
         )
         app = make_test_app(loader=loader)
         client = TestClient(app, raise_server_exceptions=False)
-        resp = client.get(f"/api/conversations/{uuid.uuid4()}/history")
+        resp = client.get(f"/api/conversations/{uuid.uuid4()}/history", params={"user_id": "open_id_admin"})
         assert resp.status_code == 500
 
 

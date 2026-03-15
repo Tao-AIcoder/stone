@@ -7,7 +7,7 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Any
 
-from fastapi import APIRouter
+from fastapi import APIRouter, Request
 
 router = APIRouter(tags=["health"])
 
@@ -15,7 +15,7 @@ _START_TIME = datetime.utcnow()
 
 
 @router.get("/health")
-async def health_check() -> dict[str, Any]:
+async def health_check(request: Request) -> dict[str, Any]:
     """
     Returns system health status.
 
@@ -37,9 +37,12 @@ async def health_check() -> dict[str, Any]:
 
     uptime = (datetime.utcnow() - _START_TIME).total_seconds()
 
-    # Gather module health from app state (set during startup)
-    from main import get_loader
-    loader = get_loader()
+    # Prefer loader from app state (injected by lifespan / test fixtures).
+    # Fall back to global singleton for backward compatibility.
+    loader = getattr(request.app.state, "loader", None)
+    if loader is None:
+        from main import get_loader
+        loader = get_loader()
 
     modules: dict[str, str] = {}
 

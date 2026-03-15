@@ -247,32 +247,32 @@ class TestConversationHistory:
     CONV = str(uuid.uuid4())
 
     def test_returns_200(self, client):
-        resp = client.get(f"/api/conversations/{self.CONV}/history", headers=HEADERS)
+        resp = client.get(f"/api/conversations/{self.CONV}/history", headers=HEADERS, params={"user_id": "open_id_admin"})
         assert resp.status_code == 200
 
     def test_response_has_messages_field(self, client):
-        data = client.get(f"/api/conversations/{self.CONV}/history", headers=HEADERS).json()
+        data = client.get(f"/api/conversations/{self.CONV}/history", headers=HEADERS, params={"user_id": "open_id_admin"}).json()
         assert "messages" in data
 
     def test_messages_is_list(self, client):
-        data = client.get(f"/api/conversations/{self.CONV}/history", headers=HEADERS).json()
+        data = client.get(f"/api/conversations/{self.CONV}/history", headers=HEADERS, params={"user_id": "open_id_admin"}).json()
         assert isinstance(data["messages"], list)
 
     def test_nonexistent_conv_returns_empty_list(self, client, loader):
         loader.sqlite_store.get_conversation_messages = AsyncMock(return_value=[])
         data = client.get(
-            f"/api/conversations/{uuid.uuid4()}/history", headers=HEADERS
+            f"/api/conversations/{uuid.uuid4()}/history", headers=HEADERS, params={"user_id": "open_id_admin"}
         ).json()
         assert data["messages"] == []
 
     def test_limit_param_accepted(self, client):
         resp = client.get(
-            f"/api/conversations/{self.CONV}/history?limit=5", headers=HEADERS
+            f"/api/conversations/{self.CONV}/history", headers=HEADERS, params={"user_id": "open_id_admin", "limit": "5"}
         )
         assert resp.status_code == 200
 
     def test_offset_param_accepted(self, client):
         resp = client.get(
-            f"/api/conversations/{self.CONV}/history?offset=10", headers=HEADERS
+            f"/api/conversations/{self.CONV}/history", headers=HEADERS, params={"user_id": "open_id_admin", "offset": "10"}
         )
         assert resp.status_code == 200

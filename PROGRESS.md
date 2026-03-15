@@ -1,16 +1,16 @@
 # 默行者 (STONE) 开发进度
 
 > 本文件供 Claude Code 追踪项目进度，每次会话开始前应先读取此文件。
-> 最后更新：2026-03-13
+> 最后更新：2026-03-14（第三次会话）
 
 ---
 
-## 当前阶段：Phase 1a —— 最小可对话链路（乐高架构已完成）
+## 当前阶段：Phase 1a 全部验收完成 ✅✅✅，测试 501 个全部通过，可进入 Phase 1b
 
 ### 验收标准
-- [ ] 在飞书上能对话
-- [ ] 能搜索（Tavily API）
-- [ ] 能读写文件（白名单目录内）
+- [x] 在飞书上能对话 ✅（2026-03-14 验证，GLM-4-plus + Ollama fallback）
+- [x] 能搜索（Tavily API）✅（2026-03-14 验证，20个集成测试全通过）
+- [x] 能读写文件（白名单目录内）✅（2026-03-14 验证，13个集成测试全通过）
 
 ---
 
@@ -42,7 +42,7 @@
 | 22 | 对话 API | `api/chat.py` | ✅ 已生成 | POST /api/chat |
 | 23 | FastAPI 入口 | `main.py` | ✅ 已生成 | lifespan + 路由挂载 |
 | 24 | **环境配置** | `.env` (本地，gitignore) | ⚠️ 待填写 | 复制 .env.example 填写真实 Key |
-| 25 | **单元/接口测试** | `tests/` 全部测试 | ✅ 318个测试，全部通过 | 2026-03-13 |
+| 25 | **单元/接口测试** | `tests/` 全部测试 | ✅ 501个测试，全部通过 | 2026-03-14（第四次会话新增48个测试，含工具集成+降级+安全修复） |
 | 26 | **端对端测试** | 飞书发消息 → 收到回复 | ⏳ 待执行 | 需要真实环境 |
 
 ---
@@ -52,7 +52,7 @@
 ### 核心文件
 | 文件 | 作用 |
 |------|------|
-| `modules/interfaces/` | 8个 ABC 接口定义，覆盖所有可替换模块 |
+| `modules/interfaces/` | 9个 ABC 接口定义，覆盖所有可替换模块 |
 | `modules/registry.py` | `DRIVERS` 字典 + `load_driver(component, driver)` 动态加载 |
 | `modules/loader.py` | 读取 `stone.config.json` driver 字段，通过 registry 加载模块 |
 | `modules/sandbox/noop.py` | Phase 1 无 Docker 沙箱（subprocess，非隔离） |
@@ -68,6 +68,7 @@
 | `AuditInterface` | `modules/interfaces/audit.py` | `AuditLogger` | 修改 `modules.audit.driver` |
 | `SandboxInterface` | `modules/interfaces/sandbox.py` | `NoopSandbox`/`DockerSandbox` | 修改 `modules.sandbox.driver` |
 | `PromptGuardInterface` | `modules/interfaces/prompt_guard.py` | `PromptGuard` | 修改 `modules.prompt_guard.driver` |
+| `SchedulerInterface` | `modules/interfaces/scheduler.py` | `Scheduler` | 修改 `modules.scheduler.driver` |
 
 ### 独立模块测试
 | 测试文件 | 覆盖范围 |
@@ -77,6 +78,15 @@
 | `tests/test_module_auth.py` | AuthManager 白名单、PIN、TOTP、限流 |
 | `tests/test_module_sandbox_noop.py` | NoopSandbox execute/run_bash/timeout |
 | `tests/test_module_prompt_guard.py` | PromptGuard scan/scan_safe/wrap_untrusted |
+
+### 黑盒 API 测试（第二次会话新增，135个）
+| 测试文件 | 覆盖范围 |
+|----------|----------|
+| `tests/test_blackbox_health.py` | /health schema 稳定性 |
+| `tests/test_blackbox_chat.py` | /api/chat 全路径（happy path/validation/auth/dry-run） |
+| `tests/test_blackbox_admin.py` | 所有 admin 端点、认证强制执行、CRUD 合约 |
+| `tests/test_blackbox_error_handling.py` | 错误格式、404、方法错误、幂等性 |
+| `tests/test_blackbox_contracts.py` | 字段必须存在、类型稳定、JSON 合法 |
 
 ---
 
@@ -94,7 +104,7 @@
 | 8 | PIN + TOTP 认证 | `security/auth.py` | ✅ 已完成 | bcrypt + pyotp（1a已含） |
 | 9 | 管理员 API | `api/admin.py` | ✅ 已生成 | 待认证集成 |
 | 10 | 定时任务引擎 | `core/scheduler.py` | ✅ 已生成 | 待集成测试 |
-| 11 | 安全测试覆盖 | `tests/` | 📋 继续扩展 | 当前 318 测试 |
+| 11 | 安全测试覆盖 | `tests/` | 📋 继续扩展 | 当前 453 测试 |
 
 ---
 
@@ -150,20 +160,34 @@
 
 ## 已归档 Bug（已修复）
 
-| Bug | 位置 | 修复方式 |
-|-----|------|---------|
-| `conv_id=body.conv_id or None` 导致 ValidationError | `api/chat.py:52` | 改为条件展开 dict |
-| `TOOL_SELECTING→THINKING` 非法转换 | `tests/test_state_machine.py` | 改为 3 状态合法循环 |
-| 正则不匹配 "disable your content guardrails" | `security/prompt_guard.py` | 加 `(\w+\s+)?` 允许中间词 |
-| 中文正则不匹配 "忽略之前的所有指令" | `security/prompt_guard.py` | 改为 `.{0,15}` 模糊匹配 |
-| "ignore all previous instructions" 匹配缺失 | `security/prompt_guard.py` | 允许中间额外词 |
+| Bug | 位置 | 修复方式 | 发现时机 |
+|-----|------|---------|---------|
+| `conv_id=body.conv_id or None` 导致 ValidationError | `api/chat.py:52` | 改为条件展开 dict | 第一次会话 |
+| `TOOL_SELECTING→THINKING` 非法转换 | `tests/test_state_machine.py` | 改为 3 状态合法循环 | 第一次会话 |
+| 正则不匹配 "disable your content guardrails" | `security/prompt_guard.py` | 加 `(\w+\s+)?` 允许中间词 | 第一次会话 |
+| 中文正则不匹配 "忽略之前的所有指令" | `security/prompt_guard.py` | 改为 `.{0,15}` 模糊匹配 | 第一次会话 |
+| "ignore all previous instructions" 匹配缺失 | `security/prompt_guard.py` | 允许中间额外词 | 第一次会话 |
+| `/api/chat` 无白名单检查 | `api/chat.py` | 加 `verify_user()` → 403 | 黑盒测试发现 |
+| `/api/chat` 无 Prompt 防护 | `api/chat.py` | 加 `prompt_guard.scan()` → 400 | 黑盒测试发现 |
+| `content=""` 空字符串被接受 | `api/chat.py` | 加 `field_validator` → 422 | 黑盒测试发现 |
+| `DockerSandbox` 继承了错误父类 | `modules/sandbox/docker.py` | 改为继承 `SandboxInterface` | 第二次会话架构审视 |
+| `stone.config.json` 缺少 3 个 driver 字段 | `stone.config.json` | 补全 auth/audit/prompt_guard driver | 第二次会话 |
+| `sandbox.driver="docker"` 指向未实现存根 | `stone.config.json` | 改为 `"noop"` | 第二次会话 |
+| `ADMIN_WHITELIST` pydantic-settings 格式错误 | `.env` | 改为 JSON 数组 `["id"]` | 第三次会话 |
+| `asyncio.get_event_loop()` 在 pytest-asyncio strict 模式下拿到错误 loop | `tools/search_tool.py`, `core/model_router.py`（zhipuai + dashscope） | 全部改为 `asyncio.get_running_loop()` | 第四次会话 |
+| `/api/conversations/{conv_id}/history` 无白名单检查 | `api/chat.py` | 加 `verify_user()` → 403 | 第四次会话 |
+| `health.py` 用全局 `get_loader()` 绕过 app.state.loader | `api/health.py` | 优先读 `request.app.state.loader`，降级回全局 | 第四次会话 |
+| `lark_oapi.ws.client.loop` 捕获 uvloop 导致 already running | `modules/gateway/feishu.py` | 子线程创建新 loop + threading.Lock 串行 | 第三次会话 |
+| `t.join()` 同步阻塞 uvicorn 事件循环 | `modules/gateway/feishu.py` | 改为 `await run_in_executor(None, t.join)` | 第三次会话 |
+| `_on_message_receive` 是 async 但 SDK 同步调用，coroutine 从未 await | `modules/gateway/feishu.py` | `_sync_on_message` + `run_coroutine_threadsafe` fire-and-forget | 第三次会话 |
+| `_sync_on_message` 等待 `future.result(60s)` 阻塞 WS 事件循环 | `modules/gateway/feishu.py` | 改为 fire-and-forget，不等结果 | 第三次会话 |
 
 ## 技术债 / 已知问题
 
 | 问题 | 位置 | 影响 |
 |------|------|------|
 | bash_tool Phase 1a 无沙箱 | `tools/bash_tool.py` | 中风险，Phase 1b 升级 |
-| health.py 用全局 _loader 而非 request.app.state.loader | `api/health.py` | 测试需 patch，Phase 1b 重构 |
+| ~~health.py 用全局 _loader 而非 request.app.state.loader~~ | ✅ 已修复 | — |
 | 模型路由任务类型判断较简单 | `core/model_router.py` | 低风险，后续优化 |
 | 飞书重连测试未完成 | `modules/gateway/feishu.py` | 需真实环境测试 |
 

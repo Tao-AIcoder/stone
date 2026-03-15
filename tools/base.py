@@ -40,6 +40,10 @@ class ToolInterface(ABC):
     description: str = ""
     requires_confirmation: bool = False
 
+    def needs_confirmation_for(self, params: dict) -> bool:
+        """Override in subclasses for per-action confirmation checks."""
+        return self.requires_confirmation
+
     @abstractmethod
     async def execute(
         self,
